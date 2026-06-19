@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1056016918200",
+    "project_id": "shsma-db2b4",
+    "storage_bucket": "shsma-db2b4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1056016918200:android:6d54f67d46b7077321364d",
+        "android_client_info": {
+          "package_name": "com.example.shsma"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC40h2ZZviY83dsKqsTtzkEOdVg10CebAY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
