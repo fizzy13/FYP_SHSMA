@@ -1,0 +1,69 @@
+<mxfile host="app.diagrams.net" modified="2026-06-23T00:00:00.000Z" agent="5.0" version="20.3.0">
+  <diagram id="system-workflow" name="Proposed System Workflow">
+    <mxGraphModel dx="1200" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="1600" background="#ffffff" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="3.2.2 Proposed System Workflow" style="text;html=1;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="180" y="20" width="740" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="subtitle" value="The proposed Smart Home Security Monitoring Application integrates IoT devices with AI technology and cloud computing to improve monitoring and response." style="text;html=1;fontSize=12;align=center;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="120" y="70" width="860" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="start" value="Motion Detected" style="rounded=1;strokeWidth=2;fillColor=#2E7D32;fontColor=#ffffff;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="360" y="150" width="360" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step2" value="Ultrasonic Sensor &amp; ESP32 Cam" style="rounded=1;strokeWidth=2;fillColor=#1565C0;fontColor=#ffffff;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="330" y="260" width="420" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step3" value="Firebase Cloud" style="rounded=1;strokeWidth=2;fillColor=#6A1B9A;fontColor=#ffffff;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="360" y="380" width="360" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step4" value="AI Detection Module" style="rounded=1;strokeWidth=2;fillColor=#00897B;fontColor=#ffffff;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="340" y="490" width="400" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step5" value="Flutter Mobile Application" style="rounded=1;strokeWidth=2;fillColor=#EF6C00;fontColor=#ffffff;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="320" y="610" width="440" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step6" value="Real-Time Notification" style="rounded=1;strokeWidth=2;fillColor=#C62828;fontColor=#ffffff;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="340" y="730" width="400" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="step7" value="User Response" style="rounded=1;strokeWidth=2;fillColor=#424242;fontColor=#ffffff;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="370" y="840" width="340" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge1" edge="1" parent="1" source="start" target="step2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeWidth=2;strokeColor=#455A64;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge2" edge="1" parent="1" source="step2" target="step3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeWidth=2;strokeColor=#455A64;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge3" edge="1" parent="1" source="step3" target="step4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeWidth=2;strokeColor=#455A64;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge4" edge="1" parent="1" source="step4" target="step5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeWidth=2;strokeColor=#455A64;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge5" edge="1" parent="1" source="step5" target="step6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeWidth=2;strokeColor=#455A64;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge6" edge="1" parent="1" source="step6" target="step7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;strokeWidth=2;strokeColor=#455A64;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="note" value="Flow: Motion detected → sensor capture → cloud upload → AI analysis → app alert → user action" style="shape=note;whiteSpace=wrap;html=1;rounded=1;strokeWidth=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=11;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="150" y="950" width="800" height="80" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

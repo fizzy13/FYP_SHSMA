@@ -1,0 +1,22 @@
+//ESP-32 Cam Module (HOST)
+=================================
+Snapshot:  http://192.168.1.100/snapshot
+Stream:    http://192.168.1.100/stream
+Sensor:    http://192.168.1.100/sensor
+=================================
+
+ESP-32 Cam Module
+=================================
+Snapshot URL: http://192.168.1.101/snapshot
+Stream URL:   http://192.168.1.101/stream
+=================================
+
+=================================
+Snapshot URL: http://192.168.1.102/snapshot
+Stream URL:   http://192.168.1.102/stream
+=================================
+
+=================================
+Snapshot URL: http://192.168.1.103/snapshot
+Stream URL:   http://192.168.1.103/stream
+=================================

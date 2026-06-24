@@ -5,6 +5,7 @@ import '../auth_service.dart';
 import '../theme_helpers.dart';
 import '../theme_manager.dart';
 import '../models/user_model.dart';
+import '../services/notification_preferences_service.dart';
 import '../services/user_info_service.dart';
 import 'welcome_screen.dart';
 import 'edit_profile_screen.dart';
@@ -18,14 +19,31 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _biometricEnabled = true;
+  bool _twoFactorEnabled = false;
   bool _pushAlertsEnabled = true;
-  bool _motionAlertsEnabled = false;
+  bool _motionAlertsEnabled = true;
   bool _systemUpdatesEnabled = true;
   bool _darkModeEnabled = true;
 
   late UserInfoService _userInfoService;
   late AuthService _authService;
+  final NotificationPreferencesService _notificationPreferencesService = NotificationPreferencesService();
   UserInfo? _userInfo;
+
+  String _displayNameFromUser() {
+    final currentUser = _authService.currentUser;
+    final fullName = currentUser?.displayName;
+    if (fullName != null && fullName.trim().isNotEmpty) {
+      return fullName.trim();
+    }
+
+    final email = currentUser?.email?.trim();
+    if (email != null && email.isNotEmpty) {
+      return email.contains('@') ? email.split('@').first : email;
+    }
+
+    return 'User';
+  }
 
   @override
   void initState() {
@@ -33,6 +51,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _userInfoService = UserInfoService();
     _authService = AuthService();
     _loadUserInfo();
+    _loadBiometricPreference();
+    _loadNotificationPreferences();
+  }
+
+  Future<void> _loadNotificationPreferences() async {
+    final pushEnabled = await _notificationPreferencesService.getPushAlertsEnabled();
+    final motionEnabled = await _notificationPreferencesService.getMotionAlertsEnabled();
+    if (!mounted) return;
+    setState(() {
+      _pushAlertsEnabled = pushEnabled;
+      _motionAlertsEnabled = motionEnabled;
+    });
+  }
+
+  Future<void> _onTogglePushAlerts(bool value) async {
+    await _notificationPreferencesService.setPushAlertsEnabled(value);
+    if (!mounted) return;
+    setState(() {
+      _pushAlertsEnabled = value;
+    });
+  }
+
+  Future<void> _onToggleMotionAlerts(bool value) async {
+    await _notificationPreferencesService.setMotionAlertsEnabled(value);
+    if (!mounted) return;
+    setState(() {
+      _motionAlertsEnabled = value;
+    });
+  }
+
+  Future<void> _loadBiometricPreference() async {
+    final enabled = await _authService.isBiometricEnabled();
+    if (!mounted) return;
+    setState(() {
+      _biometricEnabled = enabled;
+    });
   }
 
   Future<void> _loadUserInfo() async {
@@ -50,6 +104,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         if (mounted) {
           setState(() {
             _userInfo = userInfo;
+            _twoFactorEnabled = userInfo?.twoFactorEnabled ?? false;
           });
         }
       }
@@ -248,6 +303,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Future<void> _onToggleTwoFactor(bool val) async {
+    if (_userInfo == null) return;
+    if (val) {
+      final pin = await _promptForTwoFactorPinSetup();
+      if (pin != null) {
+        try {
+          await _authService.enableTwoFactor(_userInfo!, pin);
+        } catch (e) {
+          debugPrint('Error enabling two-factor: $e');
+        }
+      }
+    } else {
+      try {
+        await _authService.disableTwoFactor(_userInfo!);
+      } catch (e) {
+        debugPrint('Error disabling two-factor: $e');
+      }
+    }
+    await _loadUserInfo();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -279,7 +355,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                       const SizedBox(width: 12),
                       Text(
-                        _userInfo?.fullName ?? 'User',
+                        (_userInfo?.fullName.isNotEmpty == true)
+                            ? _userInfo!.fullName
+                            : _displayNameFromUser(),
                         style: GoogleFonts.outfit(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -360,7 +438,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 24),
               Text(
-                _userInfo?.fullName ?? 'User',
+                (_userInfo?.fullName.isNotEmpty == true)
+                    ? _userInfo!.fullName
+                    : _displayNameFromUser(),
                 style: GoogleFonts.outfit(
                   fontSize: 28,
                   fontWeight: FontWeight.bold,
@@ -423,15 +503,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       trailing: Icon(Icons.chevron_right, color: iconColor, size: 20),
                       onTap: _showChangePasswordDialog,
                     ),
-                    _buildSettingsRow(context, Icons.fingerprint, 'Biometric Login', subtitle: 'FaceID / Fingerprint enabled', trailing: _buildToggle(context, _biometricEnabled, (val) => setState(() => _biometricEnabled = val))),
-                    _buildSettingsRow(context, Icons.gpp_good_outlined, 'Two-Factor\nAuthentication', subtitle: null, trailing: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF1F382E) : const Color(0xFFE6F5EA),
-                        borderRadius: BorderRadius.circular(8),
+                    _buildSettingsRow(
+                      context,
+                      Icons.fingerprint,
+                      'Biometric Login',
+                      subtitle: 'FaceID / Fingerprint enabled',
+                      trailing: _buildToggle(
+                        context,
+                        _biometricEnabled,
+                        (val) async {
+                          await _authService.setBiometricEnabled(val);
+                          setState(() => _biometricEnabled = val);
+                        },
                       ),
-                      child: Text('SECURED', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.bold, color: accentColor)),
-                    )),
+                    ),
+                    _buildSettingsRow(
+                      context,
+                      Icons.gpp_good_outlined,
+                      'Two-Factor\nAuthentication',
+                      subtitle: _twoFactorEnabled ? 'Enabled by PIN' : 'Disabled',
+                      trailing: _buildToggle(context, _twoFactorEnabled, (val) => _onToggleTwoFactor(val)),
+                    ),
                   ],
                 ),
               ),
@@ -439,9 +531,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const SizedBox(height: 40),
               // NOTIFICATION PREFERENCES
               _buildSectionHeader(context, 'NOTIFICATION PREFERENCES'),
-              _buildNotificationToggle(context, 'Push Alerts (High Priority)', _pushAlertsEnabled, (val) => setState(() => _pushAlertsEnabled = val)),
+              _buildNotificationToggle(context, 'Push Alerts (High Priority)', _pushAlertsEnabled, _onTogglePushAlerts),
               const SizedBox(height: 12),
-              _buildNotificationToggle(context, 'Motion Alerts', _motionAlertsEnabled, (val) => setState(() => _motionAlertsEnabled = val)),
+              _buildNotificationToggle(context, 'Motion Alerts', _motionAlertsEnabled, _onToggleMotionAlerts),
               const SizedBox(height: 12),
               _buildNotificationToggle(context, 'System Updates', _systemUpdatesEnabled, (val) => setState(() => _systemUpdatesEnabled = val)),
 
@@ -615,6 +707,90 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       ),
     );
+  }
+
+  Future<String?> _promptForTwoFactorPinSetup() async {
+    final pinController = TextEditingController();
+    final confirmController = TextEditingController();
+    String? errorText;
+    String? pin;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text('Enable Two-Factor Authentication', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Create a 6-digit PIN for secure login.', style: GoogleFonts.inter()),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: pinController,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      labelText: 'PIN',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: confirmController,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      labelText: 'Confirm PIN',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 12),
+                    Text(errorText!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                  child: Text('Cancel', style: GoogleFonts.inter()),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final entered = pinController.text.trim();
+                    final confirmed = confirmController.text.trim();
+                    if (entered.length != 6 || confirmed.length != 6) {
+                      setState(() {
+                        errorText = 'PIN must be 6 digits.';
+                      });
+                      return;
+                    }
+                    if (entered != confirmed) {
+                      setState(() {
+                        errorText = 'PIN values do not match.';
+                      });
+                      return;
+                    }
+                    pin = entered;
+                    Navigator.of(context).pop();
+                  },
+                  child: Text('Enable', style: GoogleFonts.inter()),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    return pin;
   }
 
   Widget _buildNotificationToggle(BuildContext context, String title, bool isEnabled, ValueChanged<bool> onChanged) {

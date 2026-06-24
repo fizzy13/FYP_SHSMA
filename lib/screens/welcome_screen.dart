@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../auth_service.dart';
+import '../models/user_model.dart';
 import '../theme_helpers.dart';
 import 'root_screen.dart';
 import 'admin_screen.dart';
@@ -17,6 +19,21 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final AuthService _authService = AuthService();
+  bool _biometricEnabled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBiometricEnabled();
+  }
+
+  Future<void> _loadBiometricEnabled() async {
+    final enabled = await _authService.isBiometricEnabled();
+    if (!mounted) return;
+    setState(() {
+      _biometricEnabled = enabled;
+    });
+  }
 
   @override
   void dispose() {
@@ -34,6 +51,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   }
 
   void _handleSignIn() async {
+    FocusScope.of(context).unfocus();
     final rawEmail = _emailController.text.trim();
     final password = _passwordController.text;
 
@@ -48,30 +66,72 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
     }
 
     final email = _normalizeLoginEmail(rawEmail);
-    final user = await _authService.login(email, password);
-    if (!mounted) return;
+    try {
+      final user = await _authService.login(email, password);
+      if (!mounted) return;
 
-    if (user != null) {
-      if (email.contains('admin')) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => const AdminScreen(),
-          ),
-        );
-      } else {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => const RootScreen(),
-          ),
-        );
+      if (user != null) {
+          UserInfo? userInfo;
+          try {
+            userInfo = await _authService.getCurrentUserInfo();
+          } catch (e) {
+            debugPrint('Warning: unable to load user info after login: $e');
+            userInfo = null;
+          }
+          if (userInfo != null && userInfo.twoFactorEnabled) {
+            final validated = await _promptForTwoFactorPin(userInfo);
+          if (!validated) {
+            await _authService.logout();
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Two-factor authentication failed.'),
+                backgroundColor: Colors.redAccent,
+              ),
+            );
+            return;
+          }
+        }
+
+        if (_biometricEnabled) {
+          await _authService.saveBiometricCredentials(email, password);
+        }
+        _goToApp(email);
+        return;
       }
-    } else {
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Login failed. Please check your credentials.'),
+        SnackBar(
+          content: Text('Login failed: ${e.toString()}'),
           backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Login failed. Please check your credentials.'),
+        backgroundColor: Colors.redAccent,
+      ),
+    );
+  }
+
+  void _goToApp(String email) {
+    if (email.contains('admin')) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const AdminScreen(),
+        ),
+      );
+    } else {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const RootScreen(),
         ),
       );
     }
@@ -124,6 +184,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              const SizedBox(height: 8),
               Text(
                 'Smart Home Security Monitoring\nApp',
                 textAlign: TextAlign.center,
@@ -190,6 +251,26 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
               const SizedBox(height: 16),
               _buildTextField(context, 'Password', Icons.lock_outline, _passwordController, obscureText: true),
               const SizedBox(height: 32),
+              const SizedBox(height: 16),
+              if (_biometricEnabled)
+                Column(
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: _handleBiometricSignIn,
+                        icon: const Icon(Icons.fingerprint, size: 20),
+                        label: Text(kIsWeb ? 'QUICK SIGN IN' : 'SIGN IN WITH BIOMETRICS', style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: kIsWeb ? const Color(0xFF4EEF9B) : const Color(0xFF0C100E),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                ),
               SizedBox(
                 width: double.infinity,
                 height: 56,
@@ -255,6 +336,107 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _handleBiometricSignIn() async {
+    FocusScope.of(context).unfocus();
+    final enabled = await _authService.isBiometricEnabled();
+    if (!enabled) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Biometric login is not enabled.'),
+          backgroundColor: Colors.orangeAccent,
+        ),
+      );
+      return;
+    }
+
+    final user = await _authService.loginWithBiometrics();
+    if (!mounted) return;
+
+    if (user != null) {
+      final email = user.email ?? '';
+      final userInfo = await _authService.getUserInfo(email);
+      if (userInfo != null && userInfo.twoFactorEnabled) {
+        final validated = await _promptForTwoFactorPin(userInfo);
+        if (!validated) {
+          await _authService.logout();
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Two-factor authentication failed.'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+          return;
+        }
+      }
+      _goToApp(email);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Biometric login failed or no saved credentials found.'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    }
+  }
+
+  Future<bool> _promptForTwoFactorPin(UserInfo userInfo) async {
+    final pinController = TextEditingController();
+    bool isValid = false;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Two-Factor Authentication', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Enter your 6-digit authentication PIN.', style: GoogleFonts.inter()),
+              const SizedBox(height: 12),
+              TextField(
+                controller: pinController,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Authentication PIN',
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: Text('Cancel', style: GoogleFonts.inter()),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final pin = pinController.text.trim();
+                if (pin.length == 6) {
+                  isValid = true;
+                  Navigator.of(context).pop();
+                }
+              },
+              child: Text('Continue', style: GoogleFonts.inter()),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!isValid) {
+      return false;
+    }
+
+    return await _authService.validateTwoFactor(userInfo, pinController.text.trim());
   }
 
   Widget _buildTextField(BuildContext context, String hint, IconData icon, TextEditingController controller, {bool obscureText = false}) {

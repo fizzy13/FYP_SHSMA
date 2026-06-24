@@ -1,6 +1,12 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide UserInfo;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../auth_service.dart';
+import '../models/user_model.dart';
 import '../theme_helpers.dart';
+import '../theme_manager.dart';
+import 'camera_screen.dart';
 import 'welcome_screen.dart';
 
 class AdminScreen extends StatefulWidget {
@@ -11,6 +17,13 @@ class AdminScreen extends StatefulWidget {
 }
 
 class _AdminScreenState extends State<AdminScreen> {
+  static const String _usersCollectionName = 'Users';
+  static const String _activityLogsCollectionName = 'activity_logs';
+  static const Duration _activeSessionWindow = Duration(minutes: 5);
+
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final AuthService _authService = AuthService();
+
   // Switches state
   bool _humanDetection = true;
   bool _faceRecognition = true;
@@ -19,6 +32,34 @@ class _AdminScreenState extends State<AdminScreen> {
   // Navigation state
   int _currentPage = 0; // 0: Dashboard, 1: Camera, 2: Statistics, 3: Shield
   bool _showSettings = false;
+  bool _darkModeEnabled = true;
+  Color get _primaryTextColor => context.headingText;
+  Color get _secondaryTextColor => context.mutedText;
+
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _usersStream;
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _activityLogsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _usersStream = _firestore.collection(_usersCollectionName).snapshots();
+    _activityLogsStream = _firestore
+        .collection(_activityLogsCollectionName)
+        .where(
+          'timestamp',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(
+            DateTime.now().subtract(const Duration(days: 7)),
+          ),
+        )
+        .snapshots();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    _darkModeEnabled = isDark;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -60,6 +101,308 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
+  Stream<UserInfo?> _adminInfoStream() {
+    final uid = _authService.currentUser?.uid;
+    if (uid == null) {
+      return Stream<UserInfo?>.value(null);
+    }
+    return _authService.getUserInfoStreamByUid(uid);
+  }
+
+  String _displayNameFromUser(User? user) {
+    final fullName = user?.displayName;
+    if (fullName != null && fullName.trim().isNotEmpty) {
+      return fullName.trim();
+    }
+
+    final email = user?.email?.trim();
+    if (email != null && email.isNotEmpty) {
+      return email.contains('@') ? email.split('@').first : email;
+    }
+
+    return 'Admin';
+  }
+
+  String _resolveAdminName(UserInfo? info) {
+    final fullName = info?.fullName.trim();
+    if (fullName != null && fullName.isNotEmpty) {
+      return fullName;
+    }
+    return _displayNameFromUser(_authService.currentUser);
+  }
+
+  Future<void> _showChangeAdminNameDialog() async {
+    final currentName = _displayNameFromUser(_authService.currentUser);
+    final nameController = TextEditingController(text: currentName);
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        bool isSubmitting = false;
+        String? errorText;
+
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text('Change Name', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(
+                      labelText: 'Full Name',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      errorText!,
+                      style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 13),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSubmitting ? null : () => Navigator.of(context).pop(),
+                  child: Text('Cancel', style: GoogleFonts.inter()),
+                ),
+                ElevatedButton(
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                          final newName = nameController.text.trim();
+                          if (newName.isEmpty) {
+                            setState(() => errorText = 'Name cannot be empty.');
+                            return;
+                          }
+
+                          setState(() {
+                            isSubmitting = true;
+                            errorText = null;
+                          });
+
+                          try {
+                            final currentUser = _authService.currentUser;
+                            if (currentUser == null) {
+                              throw Exception('No authenticated admin found.');
+                            }
+
+                            final currentInfo = await _authService.getCurrentUserInfo();
+                            final updatedInfo = (currentInfo ??
+                                    UserInfo(
+                                      uid: currentUser.uid,
+                                      email: currentUser.email ?? '',
+                                      phoneNumber: '',
+                                      address: '',
+                                      fullName: newName,
+                                      createdAt: DateTime.now(),
+                                    ))
+                                .copyWith(
+                                  uid: currentUser.uid,
+                                  email: currentUser.email ?? currentInfo?.email ?? '',
+                                  fullName: newName,
+                                );
+
+                            await _authService.updateUserInfo(updatedInfo);
+
+                            if (!mounted) return;
+                            Navigator.of(this.context).pop();
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                              SnackBar(
+                                content: Text('Name updated successfully.', style: GoogleFonts.inter()),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+                          } catch (_) {
+                            setState(() {
+                              errorText = 'Unable to update name right now.';
+                            });
+                          } finally {
+                            setState(() {
+                              isSubmitting = false;
+                            });
+                          }
+                        },
+                  child: isSubmitting
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text('Save', style: GoogleFonts.inter()),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showChangeAdminPasswordDialog() async {
+    final newPasswordController = TextEditingController();
+    final confirmPasswordController = TextEditingController();
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        bool showNewPassword = false;
+        bool showConfirmPassword = false;
+        bool isSubmitting = false;
+        String? errorText;
+
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text('Change Password', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: newPasswordController,
+                    obscureText: !showNewPassword,
+                    decoration: InputDecoration(
+                      labelText: 'New Password',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        icon: Icon(showNewPassword ? Icons.visibility : Icons.visibility_off),
+                        onPressed: () {
+                          setState(() {
+                            showNewPassword = !showNewPassword;
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: confirmPasswordController,
+                    obscureText: !showConfirmPassword,
+                    decoration: InputDecoration(
+                      labelText: 'Re-type New Password',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        icon: Icon(showConfirmPassword ? Icons.visibility : Icons.visibility_off),
+                        onPressed: () {
+                          setState(() {
+                            showConfirmPassword = !showConfirmPassword;
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      errorText!,
+                      style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 13),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSubmitting ? null : () => Navigator.of(context).pop(),
+                  child: Text('Cancel', style: GoogleFonts.inter()),
+                ),
+                ElevatedButton(
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                          final newPassword = newPasswordController.text.trim();
+                          final confirmPassword = confirmPasswordController.text.trim();
+
+                          if (newPassword.isEmpty || confirmPassword.isEmpty) {
+                            setState(() {
+                              errorText = 'Please enter both password fields.';
+                            });
+                            return;
+                          }
+
+                          if (newPassword != confirmPassword) {
+                            setState(() {
+                              errorText = 'Passwords do not match. Please try again.';
+                            });
+                            return;
+                          }
+
+                          final confirmed = await showDialog<bool>(
+                            context: context,
+                            builder: (context) {
+                              return AlertDialog(
+                                title: Text('Confirm password change?', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+                                content: Text('Are you sure you want to update your password?', style: GoogleFonts.inter()),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.of(context).pop(false),
+                                    child: Text('No', style: GoogleFonts.inter()),
+                                  ),
+                                  ElevatedButton(
+                                    onPressed: () => Navigator.of(context).pop(true),
+                                    child: Text('Yes', style: GoogleFonts.inter()),
+                                  ),
+                                ],
+                              );
+                            },
+                          );
+
+                          if (confirmed != true) {
+                            return;
+                          }
+
+                          setState(() {
+                            isSubmitting = true;
+                            errorText = null;
+                          });
+
+                          try {
+                            await _authService.changePassword(newPassword);
+
+                            if (!mounted) return;
+                            Navigator.of(this.context).pop();
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                              SnackBar(
+                                content: Text('Password updated successfully.', style: GoogleFonts.inter()),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+                          } on FirebaseAuthException catch (e) {
+                            setState(() {
+                              if (e.code == 'requires-recent-login') {
+                                errorText = 'Please sign in again before changing your password.';
+                              } else {
+                                errorText = e.message ?? 'Password update failed. Please try again.';
+                              }
+                            });
+                          } catch (_) {
+                            setState(() {
+                              errorText = 'Unable to update password right now.';
+                            });
+                          } finally {
+                            setState(() {
+                              isSubmitting = false;
+                            });
+                          }
+                        },
+                  child: isSubmitting
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text('Change Password', style: GoogleFonts.inter()),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildDashboard() {
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
@@ -84,6 +427,9 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildCameraPage() {
+    final borderColor = context.canvasBorder;
+    final accent = Theme.of(context).colorScheme.primary;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
       child: Column(
@@ -94,7 +440,7 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             'Camera Stream',
             style: GoogleFonts.outfit(
-              color: Colors.white,
+              color: _primaryTextColor,
               fontSize: 32,
               fontWeight: FontWeight.bold,
             ),
@@ -114,7 +460,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Text(
                 'LIVE MONITORING',
                 style: GoogleFonts.inter(
-                  color: Colors.white54,
+                  color: _secondaryTextColor,
                   fontSize: 12,
                   letterSpacing: 1.5,
                 ),
@@ -123,10 +469,37 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
           const SizedBox(height: 32),
           Text(
-            'Coming soon...',
-            style: GoogleFonts.outfit(
-              color: Colors.white54,
-              fontSize: 18,
+            'ESP32-CAM LIVE',
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: accent,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Esp32SensorBar(hostIp: kEsp32HostIp),
+          const SizedBox(height: 24),
+          Container(
+            decoration: BoxDecoration(
+              color: context.secondarySurface,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: borderColor),
+            ),
+            padding: const EdgeInsets.all(16),
+            child: GridView.count(
+              crossAxisCount: 2,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              childAspectRatio: 1.0,
+              children: kEsp32DeviceList.map((device) {
+                return CameraFeedCard(
+                  ip: device['ip'] ?? '',
+                  label: device['label'] ?? 'Camera',
+                );
+              }).toList(),
             ),
           ),
           const SizedBox(height: 100),
@@ -145,9 +518,7 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(height: 32),
           _buildStatisticsHeader(),
           const SizedBox(height: 32),
-          _buildStatisticsCards(),
-          const SizedBox(height: 24),
-          _buildActivityTrendsCard(),
+          _buildLiveStatisticsSection(),
           const SizedBox(height: 24),
           _buildRegionalDistributionCard(),
           const SizedBox(height: 24),
@@ -169,7 +540,7 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             'Security Center',
             style: GoogleFonts.outfit(
-              color: Colors.white,
+              color: _primaryTextColor,
               fontSize: 32,
               fontWeight: FontWeight.bold,
             ),
@@ -189,7 +560,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Text(
                 'SECURITY OVERVIEW',
                 style: GoogleFonts.inter(
-                  color: Colors.white54,
+                  color: _secondaryTextColor,
                   fontSize: 12,
                   letterSpacing: 1.5,
                 ),
@@ -220,7 +591,7 @@ class _AdminScreenState extends State<AdminScreen> {
             Text(
               'User Statistics',
               style: GoogleFonts.outfit(
-                color: Colors.white,
+                color: _primaryTextColor,
                 fontSize: 32,
                 fontWeight: FontWeight.bold,
               ),
@@ -262,27 +633,74 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildStatisticsCards() {
+  Widget _buildLiveStatisticsSection() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _usersStream,
+      builder: (context, usersSnapshot) {
+        if (usersSnapshot.hasError) {
+          return _buildCardContainer(
+            child: Text(
+              'Unable to load user statistics right now.',
+              style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+            ),
+          );
+        }
+
+        if (!usersSnapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final usersDocs = usersSnapshot.data!.docs;
+
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _activityLogsStream,
+          builder: (context, logsSnapshot) {
+            if (logsSnapshot.hasError) {
+              return _buildCardContainer(
+                child: Text(
+                  'Unable to load activity trends right now.',
+                  style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+                ),
+              );
+            }
+
+            final logsDocs = logsSnapshot.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+            final metrics = _computeLiveUserStats(usersDocs, logsDocs);
+
+            return Column(
+              children: [
+                _buildStatisticsCardsWithData(metrics),
+                const SizedBox(height: 24),
+                _buildActivityTrendsCard(metrics.trendPoints),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildStatisticsCardsWithData(_LiveUserStatsMetrics metrics) {
     return Column(
       children: [
         _buildStatCard(
           title: 'TOTAL USERS',
-          value: '1,248,302',
-          change: '↑12%',
+          value: _formatCount(metrics.totalUsers),
+          change: '+ LIVE',
           changeColor: const Color(0xFF4EEF9B),
         ),
         const SizedBox(height: 16),
         _buildStatCard(
           title: 'ACTIVE NOW',
-          value: '84,291',
+          value: _formatCount(metrics.activeUsers),
           change: '● LIVE',
           changeColor: const Color(0xFF4EEF9B),
         ),
         const SizedBox(height: 16),
         _buildStatCard(
           title: 'INACTIVE',
-          value: '14,802',
-          change: '↓4%',
+          value: _formatCount(metrics.inactiveUsers),
+          change: '● TRACKED',
           changeColor: Colors.redAccent,
         ),
       ],
@@ -302,7 +720,7 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             title,
             style: GoogleFonts.inter(
-              color: Colors.white54,
+                  color: _secondaryTextColor.withValues(alpha: 0.7),
               fontSize: 11,
               letterSpacing: 1.5,
               fontWeight: FontWeight.w600,
@@ -315,7 +733,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Text(
                 value,
                 style: GoogleFonts.outfit(
-                  color: Colors.white,
+                  color: _primaryTextColor,
                   fontSize: 32,
                   fontWeight: FontWeight.bold,
                 ),
@@ -335,7 +753,13 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildActivityTrendsCard() {
+  Widget _buildActivityTrendsCard(List<_ActivityTrendPoint> points) {
+    final maxCount = points.isEmpty
+        ? 1
+        : points
+            .map((point) => point.activeUsers > point.inactiveUsers ? point.activeUsers : point.inactiveUsers)
+            .reduce((a, b) => a > b ? a : b);
+
     return _buildCardContainer(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -352,7 +776,7 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             'Comparing real-time active sessions vs inactive accounts',
             style: GoogleFonts.inter(
-              color: Colors.white54,
+              color: _secondaryTextColor,
               fontSize: 12,
             ),
           ),
@@ -367,15 +791,16 @@ class _AdminScreenState extends State<AdminScreen> {
               padding: const EdgeInsets.all(16.0),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildBarChart('MON', 0.6),
-                  _buildBarChart('TUE', 0.4),
-                  _buildBarChart('WED', 0.8),
-                  _buildBarChart('THU', 0.7),
-                  _buildBarChart('FRI', 0.5),
-                  _buildBarChart('SAT', 0.3),
-                  _buildBarChart('SUN', 0.6),
-                ],
+                children: points
+                    .map(
+                      (point) => _buildTrendBarPair(
+                        point.dayLabel,
+                        point.activeUsers,
+                        point.inactiveUsers,
+                        maxCount,
+                      ),
+                    )
+                    .toList(),
               ),
             ),
           ),
@@ -416,17 +841,39 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildBarChart(String day, double height) {
+  Widget _buildTrendBarPair(
+    String day,
+    int activeUsers,
+    int inactiveUsers,
+    int maxCount,
+  ) {
+    final activeHeight = maxCount == 0 ? 4.0 : (activeUsers / maxCount) * 80;
+    final inactiveHeight = maxCount == 0 ? 4.0 : (inactiveUsers / maxCount) * 80;
+
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        Container(
-          width: 12,
-          height: height * 80,
-          decoration: BoxDecoration(
-            color: const Color(0xFF4EEF9B),
-            borderRadius: BorderRadius.circular(4),
-          ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Container(
+              width: 8,
+              height: activeHeight < 4 ? 4 : activeHeight,
+              decoration: BoxDecoration(
+                color: const Color(0xFF4EEF9B),
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Container(
+              width: 8,
+              height: inactiveHeight < 4 ? 4 : inactiveHeight,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 8),
         Text(
@@ -435,6 +882,167 @@ class _AdminScreenState extends State<AdminScreen> {
         ),
       ],
     );
+  }
+
+  _LiveUserStatsMetrics _computeLiveUserStats(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> usersDocs,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> logsDocs,
+  ) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final startDate = today.subtract(const Duration(days: 6));
+
+    final userIds = <String>{};
+    final usersById = <String, Map<String, dynamic>>{};
+
+    for (final doc in usersDocs) {
+      final data = doc.data();
+      final docId = doc.id.trim();
+      if (docId.isNotEmpty) {
+        userIds.add(docId);
+        usersById[docId] = data;
+      }
+
+      final uid = (data['uid'] ?? '').toString().trim();
+      if (uid.isNotEmpty) {
+        userIds.add(uid);
+        usersById[uid] = data;
+      }
+    }
+
+    final activeNowIds = <String>{};
+
+    for (final entry in usersById.entries) {
+      if (_isMarkedActive(entry.value, now)) {
+        activeNowIds.add(entry.key);
+      }
+    }
+
+    final activeByDay = <String, Set<String>>{};
+    for (var i = 0; i < 7; i++) {
+      final day = startDate.add(Duration(days: i));
+      activeByDay[_dayKey(day)] = <String>{};
+    }
+
+    for (final logDoc in logsDocs) {
+      final data = logDoc.data();
+      final userId = (data['userId'] ?? '').toString().trim();
+      if (userId.isEmpty || !userIds.contains(userId)) {
+        continue;
+      }
+
+      final activityTime = _asDateTime(data['timestamp']) ?? _asDateTime(data['clientTimestamp']);
+      if (activityTime == null) {
+        continue;
+      }
+
+      final localTime = activityTime.toLocal();
+      if (now.difference(localTime) <= _activeSessionWindow) {
+        activeNowIds.add(userId);
+      }
+
+      final day = DateTime(localTime.year, localTime.month, localTime.day);
+      if (day.isBefore(startDate) || day.isAfter(today)) {
+        continue;
+      }
+
+      activeByDay[_dayKey(day)]?.add(userId);
+    }
+
+    final totalUsers = usersDocs.length;
+    final uniqueActiveNow = activeNowIds.length > totalUsers ? totalUsers : activeNowIds.length;
+    final inactiveUsers = totalUsers - uniqueActiveNow < 0 ? 0 : totalUsers - uniqueActiveNow;
+
+    final trendPoints = <_ActivityTrendPoint>[];
+    for (var i = 0; i < 7; i++) {
+      final day = startDate.add(Duration(days: i));
+      final activeUsers = activeByDay[_dayKey(day)]?.length ?? 0;
+      final inactiveForDay = totalUsers - activeUsers < 0 ? 0 : totalUsers - activeUsers;
+      trendPoints.add(
+        _ActivityTrendPoint(
+          dayLabel: _dayLabel(day.weekday),
+          activeUsers: activeUsers,
+          inactiveUsers: inactiveForDay,
+        ),
+      );
+    }
+
+    return _LiveUserStatsMetrics(
+      totalUsers: totalUsers,
+      activeUsers: uniqueActiveNow,
+      inactiveUsers: inactiveUsers,
+      trendPoints: trendPoints,
+    );
+  }
+
+  bool _isMarkedActive(Map<String, dynamic> data, DateTime now) {
+    final status = (data['status'] ?? data['userStatus'] ?? '').toString().toLowerCase();
+    if (status == 'online' || status == 'active' || status == 'live') {
+      return true;
+    }
+
+    final isActive = data['isActive'];
+    if (isActive is bool && isActive) {
+      return true;
+    }
+
+    final lastSeen = _asDateTime(data['lastSeen']) ??
+        _asDateTime(data['lastActiveAt']) ??
+        _asDateTime(data['updatedAt']);
+    if (lastSeen == null) {
+      return false;
+    }
+
+    return now.difference(lastSeen.toLocal()) <= _activeSessionWindow;
+  }
+
+  DateTime? _asDateTime(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is Timestamp) {
+      return value.toDate();
+    }
+    if (value is DateTime) {
+      return value;
+    }
+    if (value is String && value.isNotEmpty) {
+      return DateTime.tryParse(value);
+    }
+    if (value is int) {
+      return DateTime.fromMillisecondsSinceEpoch(value);
+    }
+    return null;
+  }
+
+  String _dayKey(DateTime day) {
+    final month = day.month.toString().padLeft(2, '0');
+    final date = day.day.toString().padLeft(2, '0');
+    return '${day.year}-$month-$date';
+  }
+
+  String _dayLabel(int weekday) {
+    switch (weekday) {
+      case DateTime.monday:
+        return 'MON';
+      case DateTime.tuesday:
+        return 'TUE';
+      case DateTime.wednesday:
+        return 'WED';
+      case DateTime.thursday:
+        return 'THU';
+      case DateTime.friday:
+        return 'FRI';
+      case DateTime.saturday:
+        return 'SAT';
+      default:
+        return 'SUN';
+    }
+  }
+
+  String _formatCount(int value) {
+    final text = value.toString();
+    return text.replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (match) => ',');
   }
 
   Widget _buildRegionalDistributionCard() {
@@ -498,7 +1106,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 Text(
                   region,
                   style: GoogleFonts.inter(
-                    color: Colors.white,
+                    color: _primaryTextColor,
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                   ),
@@ -508,7 +1116,7 @@ class _AdminScreenState extends State<AdminScreen> {
             Text(
               '$percentage%',
               style: GoogleFonts.inter(
-                color: Colors.white54,
+                color: _secondaryTextColor,
                 fontSize: 12,
               ),
             ),
@@ -520,7 +1128,7 @@ class _AdminScreenState extends State<AdminScreen> {
           child: LinearProgressIndicator(
             value: percentage / 100,
             minHeight: 6,
-            backgroundColor: Colors.white10,
+            backgroundColor: context.canvasBorder,
             valueColor: const AlwaysStoppedAnimation<Color>(
               Color(0xFF4EEF9B),
             ),
@@ -595,7 +1203,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Text(
                 title,
                 style: GoogleFonts.outfit(
-                  color: Colors.white,
+                  color: _primaryTextColor,
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
@@ -604,7 +1212,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Text(
                 subtitle,
                 style: GoogleFonts.inter(
-                  color: Colors.white54,
+                  color: _secondaryTextColor,
                   fontSize: 11,
                 ),
               ),
@@ -674,7 +1282,7 @@ class _AdminScreenState extends State<AdminScreen> {
                         onPressed: () {},
                       ),
                       IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                        icon: Icon(Icons.close, color: _secondaryTextColor, size: 20),
                         onPressed: () {
                           setState(() => _showSettings = false);
                         },
@@ -708,25 +1316,31 @@ class _AdminScreenState extends State<AdminScreen> {
                             ),
                           ),
                           const SizedBox(width: 16),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Elena Vance',
-                                style: GoogleFonts.outfit(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              Text(
-                                'Administrator',
-                                style: GoogleFonts.inter(
-                                  color: Colors.white54,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
+                          StreamBuilder<UserInfo?>(
+                            stream: _adminInfoStream(),
+                            builder: (context, snapshot) {
+                              final adminName = _resolveAdminName(snapshot.data);
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    adminName,
+                                    style: GoogleFonts.outfit(
+                                      color: _primaryTextColor,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Administrator',
+                                    style: GoogleFonts.inter(
+                                      color: _secondaryTextColor,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
                           ),
                         ],
                       ),
@@ -736,8 +1350,16 @@ class _AdminScreenState extends State<AdminScreen> {
                     _buildSettingGroup(
                       'MANAGE ACCOUNT',
                       [
-                        _buildSimpleSettingItem('Change Name', Icons.check_circle_outline),
-                        _buildSimpleSettingItem('Change Password', Icons.check_circle_outline),
+                        _buildSimpleSettingItem(
+                          'Change Name',
+                          Icons.check_circle_outline,
+                          onTap: _showChangeAdminNameDialog,
+                        ),
+                        _buildSimpleSettingItem(
+                          'Change Password',
+                          Icons.check_circle_outline,
+                          onTap: _showChangeAdminPasswordDialog,
+                        ),
                       ],
                     ),
                     const SizedBox(height: 32),
@@ -745,7 +1367,7 @@ class _AdminScreenState extends State<AdminScreen> {
                     Text(
                       'APP SETTINGS',
                       style: GoogleFonts.inter(
-                        color: Colors.white54,
+                        color: _secondaryTextColor,
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 1.5,
@@ -764,32 +1386,38 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildSimpleSettingItem(String title, IconData icon) {
+  Widget _buildSimpleSettingItem(String title, IconData icon, {VoidCallback? onTap}) {
     return Container(
-      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: context.tertiarySurface,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Icon(icon, color: const Color(0xFF4EEF9B), size: 20),
-              const SizedBox(width: 12),
-              Text(
-                title,
-                style: GoogleFonts.inter(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                ),
+              Row(
+                children: [
+                  Icon(icon, color: const Color(0xFF4EEF9B), size: 20),
+                  const SizedBox(width: 12),
+                  Text(
+                    title,
+                    style: GoogleFonts.inter(
+                      color: _primaryTextColor,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
               ),
+              Icon(Icons.chevron_right, color: _secondaryTextColor, size: 20),
             ],
           ),
-          const Icon(Icons.chevron_right, color: Colors.white54, size: 20),
-        ],
+        ),
       ),
     );
   }
@@ -812,7 +1440,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Text(
                 'Dark Mode',
                 style: GoogleFonts.inter(
-                  color: Colors.white,
+                  color: _primaryTextColor,
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
                 ),
@@ -820,10 +1448,13 @@ class _AdminScreenState extends State<AdminScreen> {
             ],
           ),
           Switch(
-            value: true,
-            onChanged: (val) {},
+            value: _darkModeEnabled,
+            onChanged: (val) {
+              setState(() => _darkModeEnabled = val);
+              AppTheme.setDarkMode(val);
+            },
             activeThumbColor: Colors.white,
-            activeTrackColor: const Color(0xFF4EEF9B),
+            activeTrackColor: const Color(0xFF4EEF9B).withValues(alpha: 0.3),
             inactiveThumbColor: Colors.grey,
             inactiveTrackColor: Colors.white10,
           ),
@@ -839,7 +1470,7 @@ class _AdminScreenState extends State<AdminScreen> {
         Text(
           title,
           style: GoogleFonts.inter(
-            color: Colors.white54,
+            color: _secondaryTextColor,
             fontSize: 11,
             fontWeight: FontWeight.w600,
             letterSpacing: 1.5,
@@ -866,17 +1497,23 @@ class _AdminScreenState extends State<AdminScreen> {
           radius: 20,
           backgroundImage: NetworkImage(
             'https://i.pravatar.cc/150?img=47',
-          ), // Placeholder for Elena
+          ),
         ),
         const SizedBox(width: 12),
-        Text(
-          'Elena Vance',
-          style: GoogleFonts.outfit(
-            color: const Color(0xFF00E676),
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            letterSpacing: 1.2,
-          ),
+        StreamBuilder<UserInfo?>(
+          stream: _adminInfoStream(),
+          builder: (context, snapshot) {
+            final adminName = _resolveAdminName(snapshot.data);
+            return Text(
+              adminName,
+              style: GoogleFonts.outfit(
+                color: const Color(0xFF00E676),
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2,
+              ),
+            );
+          },
         ),
         const Spacer(),
         IconButton(
@@ -910,7 +1547,7 @@ class _AdminScreenState extends State<AdminScreen> {
         Text(
           'Admin Panel',
           style: GoogleFonts.outfit(
-            color: Colors.white,
+            color: _primaryTextColor,
             fontSize: 32,
             fontWeight: FontWeight.bold,
           ),
@@ -930,7 +1567,7 @@ class _AdminScreenState extends State<AdminScreen> {
             Text(
               'SHSMA ECOSYSTEM ONLINE',
               style: GoogleFonts.inter(
-                color: Colors.white54,
+                color: _secondaryTextColor,
                 fontSize: 12,
                 letterSpacing: 1.5,
               ),
@@ -972,45 +1609,52 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildManageUsersCard() {
-    return _buildCardContainer(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildSectionHeader(
-            'Manage Users',
-            trailing: Row(
-              children: [
-                const Icon(Icons.person_add, color: Colors.white54, size: 16),
-                const SizedBox(width: 4),
-                Text(
-                  'ADD MEMBER',
-                  style: GoogleFonts.inter(
-                    color: Colors.white54,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
+    return StreamBuilder<UserInfo?>(
+      stream: _adminInfoStream(),
+      builder: (context, snapshot) {
+        final adminName = _resolveAdminName(snapshot.data);
+
+        return _buildCardContainer(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSectionHeader(
+                'Manage Users',
+                trailing: Row(
+                  children: [
+                    Icon(Icons.person_add, color: _secondaryTextColor, size: 16),
+                    const SizedBox(width: 4),
+                    Text(
+                      'ADD MEMBER',
+                      style: GoogleFonts.inter(
+                        color: _secondaryTextColor,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 24),
+              _buildUserRow(
+                name: adminName,
+                role: 'Administrator',
+                status: 'ACTIVE',
+                avatarUrl: 'https://i.pravatar.cc/150?img=47',
+                statusColor: const Color(0xFF00E676),
+              ),
+              const SizedBox(height: 16),
+              _buildUserRow(
+                name: 'Marcus Chen',
+                role: 'Family Member',
+                status: 'LIMITED',
+                avatarUrl: 'https://i.pravatar.cc/150?img=11',
+                statusColor: Colors.white54,
+              ),
+            ],
           ),
-          const SizedBox(height: 24),
-          _buildUserRow(
-            name: 'Elena Vance',
-            role: 'Administrator',
-            status: 'ACTIVE',
-            avatarUrl: 'https://i.pravatar.cc/150?img=47',
-            statusColor: const Color(0xFF00E676),
-          ),
-          const SizedBox(height: 16),
-          _buildUserRow(
-            name: 'Marcus Chen',
-            role: 'Family Member',
-            status: 'LIMITED',
-            avatarUrl: 'https://i.pravatar.cc/150?img=11',
-            statusColor: Colors.white54,
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1040,14 +1684,14 @@ class _AdminScreenState extends State<AdminScreen> {
                 Text(
                   name,
                   style: GoogleFonts.outfit(
-                    color: Colors.white,
+                    color: _primaryTextColor,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
                 Text(
                   role,
-                  style: GoogleFonts.inter(color: Colors.white54, fontSize: 12),
+                  style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
                 ),
               ],
             ),
@@ -1121,14 +1765,14 @@ class _AdminScreenState extends State<AdminScreen> {
             Text(
               title,
               style: GoogleFonts.outfit(
-                color: Colors.white,
+                color: _primaryTextColor,
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
               ),
             ),
             Text(
               subtitle,
-              style: GoogleFonts.inter(color: Colors.white54, fontSize: 12),
+              style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
             ),
           ],
         ),
@@ -1165,55 +1809,51 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             '12 ACTIVE NODES',
             style: GoogleFonts.inter(
-              color: Colors.white54,
+              color: _secondaryTextColor,
               fontSize: 10,
               letterSpacing: 1.2,
             ),
           ),
           const SizedBox(height: 24),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 16,
-            crossAxisSpacing: 16,
-            childAspectRatio: 1.2,
-            children: [
-              _buildDeviceItem(
-                icon: Icons.videocam,
-                name: 'Front Cam',
-                status: 'ONLINE',
-                statusColor: const Color(0xFF00E676),
-                isOnline: true,
-              ),
-              _buildDeviceItem(
-                icon: Icons.cell_tower,
-                name: 'Main Entry',
-                status: 'SECURED',
-                statusColor: const Color(0xFF00E676),
-                isOnline: true,
-              ),
-              _buildDeviceItem(
-                icon: Icons.battery_alert,
-                name: 'Garage Sen',
-                status: 'LOW BATT',
-                statusColor: Colors.redAccent,
-                isOnline: false, // Or just red color indicator
-              ),
-              _buildDeviceItem(
-                icon: Icons.lock_open,
-                name: 'Smart Lock',
-                status: 'OPEN',
-                statusColor: Colors.white54,
-                isOnline: false,
-              ),
-            ],
+          Text(
+            'Camera Monitor',
+            style: GoogleFonts.outfit(
+              color: _primaryTextColor,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Esp32SensorBar(hostIp: kEsp32HostIp),
+          const SizedBox(height: 20),
+          Container(
+            decoration: BoxDecoration(
+              color: context.secondarySurface,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: context.canvasBorder),
+            ),
+            padding: const EdgeInsets.all(16),
+            child: GridView.count(
+              crossAxisCount: 2,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              childAspectRatio: 1.0,
+              children: kEsp32DeviceList.map((device) {
+                return CameraFeedCard(
+                  ip: device['ip'] ?? '',
+                  label: device['label'] ?? 'Camera',
+                );
+              }).toList(),
+            ),
           ),
         ],
       ),
     );
   }
 
+  // ignore: unused_element
   Widget _buildDeviceItem({
     required IconData icon,
     required String name,
@@ -1236,7 +1876,7 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             name,
             style: GoogleFonts.outfit(
-              color: Colors.white,
+              color: _primaryTextColor,
               fontSize: 16,
               fontWeight: FontWeight.w600,
             ),
@@ -1271,72 +1911,79 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildSystemLogsCard() {
-    return _buildCardContainer(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildSectionHeader(
-            'System Logs',
-            trailing: Text(
-              'EXPORT',
-              style: GoogleFonts.inter(
-                color: Colors.white54,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.0,
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          _buildLogItem(
-            '14:02',
-            'INFO',
-            '[Human Detected] Front Door Cam',
-            const Color(0xFF00E676),
-          ),
-          const SizedBox(height: 12),
-          _buildLogItem(
-            '13:45',
-            'INFO',
-            '[Lock Engaged] Main Entry',
-            const Color(0xFF00E676),
-          ),
-          const SizedBox(height: 12),
-          _buildLogItem(
-            '13:12',
-            'WARN',
-            '[Low Battery] Garage Sensor',
-            Colors.orangeAccent,
-          ),
-          const SizedBox(height: 12),
-          _buildLogItem(
-            '12:58',
-            'INFO',
-            '[Auth] Elena Vance logged in',
-            const Color(0xFF00E676),
-          ),
-          const SizedBox(height: 24),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            decoration: BoxDecoration(
-              color: context.tertiarySurface,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Center(
-              child: Text(
-                'VIEW FULL HISTORY',
-                style: GoogleFonts.inter(
-                  color: const Color(0xFF4EEF9B),
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.0,
+    return StreamBuilder<UserInfo?>(
+      stream: _adminInfoStream(),
+      builder: (context, snapshot) {
+        final adminName = _resolveAdminName(snapshot.data);
+
+        return _buildCardContainer(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSectionHeader(
+                'System Logs',
+                trailing: Text(
+                  'EXPORT',
+                  style: GoogleFonts.inter(
+                    color: Colors.white54,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.0,
+                  ),
                 ),
               ),
-            ),
+              const SizedBox(height: 24),
+              _buildLogItem(
+                '14:02',
+                'INFO',
+                '[Human Detected] Front Door Cam',
+                const Color(0xFF00E676),
+              ),
+              const SizedBox(height: 12),
+              _buildLogItem(
+                '13:45',
+                'INFO',
+                '[Lock Engaged] Main Entry',
+                const Color(0xFF00E676),
+              ),
+              const SizedBox(height: 12),
+              _buildLogItem(
+                '13:12',
+                'WARN',
+                '[Low Battery] Garage Sensor',
+                Colors.orangeAccent,
+              ),
+              const SizedBox(height: 12),
+              _buildLogItem(
+                '12:58',
+                'INFO',
+                '[Auth] $adminName logged in',
+                const Color(0xFF00E676),
+              ),
+              const SizedBox(height: 24),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                decoration: BoxDecoration(
+                  color: context.tertiarySurface,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Center(
+                  child: Text(
+                    'VIEW FULL HISTORY',
+                    style: GoogleFonts.inter(
+                      color: const Color(0xFF4EEF9B),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1361,7 +2008,7 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             time,
             style: GoogleFonts.jetBrainsMono(
-              color: Colors.white30,
+              color: _secondaryTextColor.withValues(alpha: 0.7),
               fontSize: 12,
             ),
           ),
@@ -1379,7 +2026,7 @@ class _AdminScreenState extends State<AdminScreen> {
             child: Text(
               message,
               style: GoogleFonts.jetBrainsMono(
-                color: Colors.white70,
+                color: _secondaryTextColor,
                 fontSize: 12,
               ),
             ),
@@ -1412,7 +2059,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Icons.space_dashboard_rounded,
               color: _currentPage == 0
                   ? const Color(0xFF4EEF9B)
-                  : Colors.white54,
+                  : (context.isDarkMode ? Colors.white54 : Colors.black54),
             ),
             onPressed: () => setState(() => _currentPage = 0),
           ),
@@ -1421,7 +2068,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Icons.videocam_rounded,
               color: _currentPage == 1
                   ? const Color(0xFF4EEF9B)
-                  : Colors.white54,
+                  : (context.isDarkMode ? Colors.white54 : Colors.black54),
             ),
             onPressed: () => setState(() => _currentPage = 1),
           ),
@@ -1430,7 +2077,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Icons.insert_chart_rounded,
               color: _currentPage == 2
                   ? const Color(0xFF4EEF9B)
-                  : Colors.white54,
+                  : (context.isDarkMode ? Colors.white54 : Colors.black54),
             ),
             onPressed: () => setState(() => _currentPage = 2),
           ),
@@ -1447,7 +2094,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 border: _currentPage == 3
                     ? null
                     : Border.all(
-                        color: Colors.white54,
+                        color: context.isDarkMode ? Colors.white54 : Colors.black12,
                         width: 2,
                       ),
               ),
@@ -1455,7 +2102,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 Icons.shield,
                 color: _currentPage == 3
                     ? const Color(0xFF0C100E)
-                    : Colors.white54,
+                    : (context.isDarkMode ? Colors.white54 : Colors.black54),
                 size: 28,
               ),
             ),
@@ -1464,4 +2111,30 @@ class _AdminScreenState extends State<AdminScreen> {
       ),
     );
   }
+}
+
+class _LiveUserStatsMetrics {
+  const _LiveUserStatsMetrics({
+    required this.totalUsers,
+    required this.activeUsers,
+    required this.inactiveUsers,
+    required this.trendPoints,
+  });
+
+  final int totalUsers;
+  final int activeUsers;
+  final int inactiveUsers;
+  final List<_ActivityTrendPoint> trendPoints;
+}
+
+class _ActivityTrendPoint {
+  const _ActivityTrendPoint({
+    required this.dayLabel,
+    required this.activeUsers,
+    required this.inactiveUsers,
+  });
+
+  final String dayLabel;
+  final int activeUsers;
+  final int inactiveUsers;
 }

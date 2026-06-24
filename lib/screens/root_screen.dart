@@ -63,7 +63,7 @@ class _RootScreenState extends State<RootScreen> {
             ),
             BottomNavigationBarItem(
               icon: _buildIcon(Icons.location_on, 2, isDark: isDark),
-              label: _selectedIndex == 2 ? '' : 'SAFETY',
+              label: _selectedIndex == 2 ? '' : 'ALERT',
             ),
             BottomNavigationBarItem(
               icon: _buildIcon(Icons.person, 3, isDark: isDark),

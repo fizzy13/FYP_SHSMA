@@ -18,6 +18,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final UserInfoService _userInfoService = UserInfoService();
   UserInfo? _userInfo;
 
+  String _displayNameFromUser() {
+    final currentUser = _authService.currentUser;
+    final fullName = currentUser?.displayName;
+    if (fullName != null && fullName.trim().isNotEmpty) {
+      return fullName.trim();
+    }
+
+    final email = currentUser?.email?.trim();
+    if (email != null && email.isNotEmpty) {
+      return email.contains('@') ? email.split('@').first : email;
+    }
+
+    return 'User';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -79,7 +94,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                       const SizedBox(width: 12),
                       Text(
-                        _userInfo?.fullName ?? _authService.currentUser?.displayName ?? 'User',
+                        (_userInfo?.fullName.isNotEmpty == true)
+                            ? _userInfo!.fullName
+                            : _displayNameFromUser(),
                         style: GoogleFonts.outfit(
                           fontSize: 18,
                           fontWeight: FontWeight.w600,

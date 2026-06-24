@@ -1,13 +1,76 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide UserInfo;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../auth_service.dart';
 import '../models/user_model.dart';
+import '../services/security_event_service.dart';
 import '../theme_helpers.dart';
 import 'camera_screen.dart';
 
-class AlertsScreen extends StatelessWidget {
+class AlertsScreen extends StatefulWidget {
   const AlertsScreen({super.key});
+
+  @override
+  State<AlertsScreen> createState() => _AlertsScreenState();
+}
+
+class _AlertsScreenState extends State<AlertsScreen> {
+  String? _lastShownAlertId;
+
+  Future<void> _confirmAndCallPolice() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(
+            'Call Police',
+            style: GoogleFonts.outfit(fontWeight: FontWeight.w700),
+          ),
+          content: Text(
+            'Call 999?',
+            style: GoogleFonts.inter(),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text('Cancel', style: GoogleFonts.outfit()),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text('Confirm', style: GoogleFonts.outfit()),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    final uri = Uri(scheme: 'tel', path: '999');
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+
+    if (!launched && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open phone dialer for 999.')),
+      );
+    }
+  }
+
+  String _displayNameFromUser(User? user) {
+    final fullName = user?.displayName;
+    if (fullName != null && fullName.trim().isNotEmpty) {
+      return fullName.trim();
+    }
+
+    final email = user?.email?.trim();
+    if (email != null && email.isNotEmpty) {
+      return email.contains('@') ? email.split('@').first : email;
+    }
+
+    return 'User';
+  }
 
   String _formatTimestamp(dynamic timestamp) {
     if (timestamp is Timestamp) {
@@ -47,9 +110,9 @@ class AlertsScreen extends StatelessWidget {
                     : Stream<UserInfo?>.value(null),
                 builder: (context, snapshot) {
                   final currentUser = authService.currentUser;
-                  final headerName = snapshot.data?.fullName ??
-                      currentUser?.displayName ??
-                      (currentUser?.email?.split('@').first ?? 'Guest');
+                    final headerName = snapshot.data?.fullName.isNotEmpty == true
+                      ? snapshot.data!.fullName
+                      : _displayNameFromUser(currentUser);
 
                   return Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -94,7 +157,7 @@ class AlertsScreen extends StatelessWidget {
               const SizedBox(height: 32),
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: FirebaseFirestore.instance
-                    .collection('alerts')
+                    .collection(kAlertsCollectionName)
                     .orderBy('timestamp', descending: true)
                     .snapshots(),
                 builder: (context, snapshot) {
@@ -128,15 +191,68 @@ class AlertsScreen extends StatelessWidget {
                     );
                   }
 
-                  final latest = docs.first.data();
-                  final alertType = latest['type'] as String? ?? 'SECURITY';
+                  final latestDoc = docs.first;
+                  final latest = latestDoc.data();
+                  final alertType = latest['type'] as String? ?? latest['alerts'] as String? ?? 'SECURITY';
                   final alertMessage = latest['message'] as String? ?? 'New alert received';
                   final alertLocation = latest['location'] as String? ?? 'Unknown location';
+                  final alertStatus = latest['status'] as String? ?? 'ACTIVE';
                   final alertTime = _formatTimestamp(latest['timestamp']);
+
+                  if (alertStatus.toUpperCase() == 'LIVE' && _lastShownAlertId != latestDoc.id) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted) return;
+                      _lastShownAlertId = latestDoc.id;
+                      showDialog<void>(
+                        context: context,
+                        barrierDismissible: true,
+                        builder: (context) {
+                          return AlertDialog(
+                            backgroundColor: surface,
+                            title: Text('Motion Detected', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+                            content: Text(alertMessage, style: GoogleFonts.inter()),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.of(context).pop(),
+                                child: Text('Dismiss', style: GoogleFonts.outfit(color: accent)),
+                              ),
+                            ],
+                          );
+                        },
+                      );
+                    });
+                  }
 
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (alertStatus.toUpperCase() == 'LIVE')
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFF6B6B).withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.35)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.wifi_tethering, color: Color(0xFFFF6B6B), size: 18),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'LIVE ALERT: $alertMessage',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: const Color(0xFFFF6B6B),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       Container(
                         padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
@@ -209,7 +325,7 @@ class AlertsScreen extends StatelessWidget {
                                 const SizedBox(width: 16),
                                 Expanded(
                                   child: ElevatedButton(
-                                    onPressed: () {},
+                                    onPressed: _confirmAndCallPolice,
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: surface,
                                       padding: const EdgeInsets.symmetric(vertical: 16),

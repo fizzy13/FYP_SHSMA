@@ -6,6 +6,17 @@ class UserInfoService {
   // Use the 'Users' collection which matches your Firestore console screenshot
   final String _collectionName = 'Users';
 
+  UserInfo? _userInfoFromSnapshot(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data();
+    if (!doc.exists || data == null) {
+      return null;
+    }
+    return UserInfo.fromMap({
+      ...data,
+      'uid': data['uid'] ?? doc.id,
+    });
+  }
+
   /// Save or update user information in Firestore
   /// If `userInfo.uid` is present we use that as the document ID.
   Future<void> saveUserInfo(UserInfo userInfo) async {
@@ -54,8 +65,19 @@ class UserInfoService {
   Future<UserInfo?> getUserInfoByUid(String uid) async {
     try {
       final doc = await _firestore.collection(_collectionName).doc(uid).get();
-      if (doc.exists && doc.data() != null) {
-        return UserInfo.fromMap(doc.data() as Map<String, dynamic>);
+      final directUser = _userInfoFromSnapshot(doc);
+      if (directUser != null) {
+        return directUser;
+      }
+
+      final query = await _firestore
+          .collection(_collectionName)
+          .where('uid', isEqualTo: uid)
+          .limit(1)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        return _userInfoFromSnapshot(query.docs.first);
       }
       return null;
     } catch (e) {
@@ -87,9 +109,20 @@ class UserInfoService {
 
   /// Get real-time stream of user information by UID
   Stream<UserInfo?> getUserInfoStreamByUid(String uid) {
-    return _firestore.collection(_collectionName).doc(uid).snapshots().map((docSnapshot) {
-      if (docSnapshot.exists && docSnapshot.data() != null) {
-        return UserInfo.fromMap(docSnapshot.data() as Map<String, dynamic>);
+    return _firestore.collection(_collectionName).doc(uid).snapshots().asyncMap((docSnapshot) async {
+      final directUser = _userInfoFromSnapshot(docSnapshot);
+      if (directUser != null) {
+        return directUser;
+      }
+
+      final query = await _firestore
+          .collection(_collectionName)
+          .where('uid', isEqualTo: uid)
+          .limit(1)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        return _userInfoFromSnapshot(query.docs.first);
       }
       return null;
     });
