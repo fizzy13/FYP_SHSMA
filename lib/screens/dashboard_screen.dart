@@ -1,13 +1,25 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../auth_service.dart';
 import '../models/user_model.dart';
 import '../services/user_info_service.dart';
 import '../theme_helpers.dart';
+import 'camera_screen.dart';
+import 'welcome_screen.dart';
+
+const String _kPrefTapoRelayIp = 'tapo_relay_ip';
+const String _kPrefTapoRelayPort = 'tapo_relay_port';
+const String _kPrefTapoStreamName = 'tapo_stream_name';
+const String _kPrefTapoStreamName2 = 'tapo_stream_name2';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  final VoidCallback? onOpenCamera;
+
+  const DashboardScreen({super.key, this.onOpenCamera});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -17,6 +29,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final AuthService _authService = AuthService();
   final UserInfoService _userInfoService = UserInfoService();
   UserInfo? _userInfo;
+
+  bool _frontCameraOnline = false;
+  bool _backCameraOnline = false;
+  Timer? _cameraStatusTimer;
+  String _tapoRelayIp = kTapoDefaultRelayIp;
+  String _tapoRelayPort = kTapoDefaultRelayPort;
+  String _tapoStreamName = kTapoDefaultStreamName;
+  String _tapoStreamName2 = kTapoDefaultStreamName2;
 
   String _displayNameFromUser() {
     final currentUser = _authService.currentUser;
@@ -37,6 +57,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _loadUserInfo();
+    _loadCameraConfigAndPoll();
+  }
+
+  Future<void> _loadCameraConfigAndPoll() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
+    final savedTapoIp = prefs.getString(_kPrefTapoRelayIp);
+    setState(() {
+      _tapoRelayIp = savedTapoIp == kTapoCameraIp || savedTapoIp == null || savedTapoIp.trim().isEmpty
+          ? kTapoDefaultRelayIp
+          : savedTapoIp;
+      _tapoRelayPort = prefs.getString(_kPrefTapoRelayPort) ?? kTapoDefaultRelayPort;
+      _tapoStreamName = prefs.getString(_kPrefTapoStreamName) ?? kTapoDefaultStreamName;
+      _tapoStreamName2 = prefs.getString(_kPrefTapoStreamName2) ?? kTapoDefaultStreamName2;
+    });
+
+    _pollCameraStatus();
+    _cameraStatusTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollCameraStatus());
+  }
+
+  Future<bool> _isCameraReachable(String streamName) async {
+    try {
+      final uri = Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$streamName');
+      final response = await http.get(uri).timeout(const Duration(seconds: 2));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _pollCameraStatus() async {
+    final front = await _isCameraReachable(_tapoStreamName);
+    final back = await _isCameraReachable(_tapoStreamName2);
+    if (!mounted) return;
+    setState(() {
+      _frontCameraOnline = front;
+      _backCameraOnline = back;
+    });
+  }
+
+  @override
+  void dispose() {
+    _cameraStatusTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadUserInfo() async {
@@ -61,6 +126,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _userInfo = userInfo;
       });
     }
+  }
+
+  Future<void> _handleSignOut(BuildContext context) async {
+    await _authService.logout();
+    if (!context.mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const WelcomeScreen()),
+      (route) => false,
+    );
   }
 
   @override
@@ -105,7 +180,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ],
                   ),
-                  const Icon(Icons.notifications, color: Color(0xFF4EEF9B)),
+                  Row(
+                    children: [
+                      const Icon(Icons.notifications, color: Color(0xFF4EEF9B)),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        icon: const Icon(Icons.logout, color: Colors.redAccent),
+                        onPressed: () => _handleSignOut(context),
+                      ),
+                    ],
+                  ),
                 ],
               ),
               const SizedBox(height: 24),
@@ -328,175 +412,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               ),
               const SizedBox(height: 16),
-              // Live Camera Devices from Firebase
-              StreamBuilder(
-                stream: FirebaseFirestore.instance
-                    .collection('devices')
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                    return Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: panel,
-                        borderRadius: BorderRadius.circular(28),
-                        border: Border.all(color: borderColor),
-                      ),
-                      child: Center(
-                        child: Text(
-                          'No devices found',
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            color: textSecondary,
-                          ),
-                        ),
-                      ),
-                    );
-                  }
-
-                  var devices = snapshot.data!.docs;
-
-                  return Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(28),
-                      border: Border.all(color: borderColor),
-                    ),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: devices.length,
-                      itemBuilder: (context, index) {
-                        var device = devices[index];
-                        String deviceName = device['device_name'] ?? 'Unknown Device';
-                        String deviceStatus = device['status'] ?? 'offline';
-                        bool isOnline = deviceStatus.toLowerCase() == 'online';
-
-                        return Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: panel,
-                            border: Border(
-                              bottom: index < devices.length - 1
-                                  ? BorderSide(color: borderColor)
-                                  : BorderSide.none,
-                            ),
-                            borderRadius: index == 0
-                                ? const BorderRadius.only(
-                                    topLeft: Radius.circular(28),
-                                    topRight: Radius.circular(28),
-                                  )
-                                : index == devices.length - 1
-                                    ? const BorderRadius.only(
-                                        bottomLeft: Radius.circular(28),
-                                        bottomRight: Radius.circular(28),
-                                      )
-                                    : BorderRadius.zero,
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Row(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: isDark ? bg : const Color(0xFFF4F6F8),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: isOnline
-                                            ? const Color(0xFF4EEF9B)
-                                            : borderColor,
-                                      ),
-                                    ),
-                                    child: Icon(
-                                      Icons.videocam,
-                                      color: isOnline
-                                          ? const Color(0xFF4EEF9B)
-                                          : textSecondary,
-                                      size: 20,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        deviceName,
-                                        style: GoogleFonts.outfit(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w600,
-                                          color: textPrimary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        isOnline ? 'ONLINE' : 'OFFLINE',
-                                        style: GoogleFonts.inter(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w600,
-                                          color: isOnline
-                                              ? const Color(0xFF4EEF9B)
-                                              : textSecondary,
-                                          letterSpacing: 1.0,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: isOnline
-                                      ? const Color(0xFF4EEF9B).withValues(alpha: 0.1)
-                                      : panel,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: isOnline
-                                        ? const Color(0xFF4EEF9B).withValues(alpha: 0.3)
-                                        : borderColor,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      width: 6,
-                                      height: 6,
-                                      decoration: BoxDecoration(
-                                        color: isOnline
-                                            ? const Color(0xFF4EEF9B)
-                                            : textSecondary,
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      'VIEW',
-                                      style: GoogleFonts.inter(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w600,
-                                        color: isOnline
-                                            ? const Color(0xFF4EEF9B)
-                                            : textSecondary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-                  );
-                },
+              // Camera status tiles, live-polled from the go2rtc relay (same source as the Cameras page).
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildCameraStatusCard(context, 'Front Camera', _frontCameraOnline),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildCameraStatusCard(context, 'Back Camera', _backCameraOnline),
+                  ),
+                ],
               ),
               const SizedBox(height: 32),
               // Recent Activity Header
@@ -521,6 +447,68 @@ class _DashboardScreenState extends State<DashboardScreen> {
               _buildActivityItem(context, 'Sensor: Motion Event', 'Backyard • 15m ago', Icons.radar, textSecondary),
               _buildActivityItem(context, 'Sensor: Door Locked', 'Main Entrance • 1h ago', Icons.door_sliding, textSecondary),
               _buildActivityItem(context, 'System: Disarmed', 'Mobile App • 3h ago', Icons.lock_open, textSecondary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCameraStatusCard(BuildContext context, String name, bool isOnline) {
+    final panel = context.tertiarySurface;
+    final borderColor = context.canvasBorder;
+    final textPrimary = context.headingText;
+    final textSecondary = context.mutedText;
+    final statusColor = isOnline ? const Color(0xFF4EEF9B) : textSecondary;
+
+    return Material(
+      color: panel,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () {
+          // Reuse the bottom-nav Cameras tab instead of pushing a second CameraScreen,
+          // which would compete with it for the same camera stream and cause disconnects.
+          if (widget.onOpenCamera != null) {
+            widget.onOpenCamera!();
+          } else {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const CameraScreen()),
+            );
+          }
+        },
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 112),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: isOnline ? statusColor : borderColor),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.videocam_outlined, color: statusColor, size: 24),
+              const SizedBox(height: 8),
+              Text(
+                name,
+                style: GoogleFonts.outfit(
+                  color: textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                isOnline ? 'ONLINE' : 'OFFLINE',
+                style: GoogleFonts.inter(
+                  color: statusColor,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.0,
+                ),
+              ),
             ],
           ),
         ),

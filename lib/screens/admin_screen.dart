@@ -1,13 +1,22 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' hide UserInfo;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../auth_service.dart';
 import '../models/user_model.dart';
 import '../theme_helpers.dart';
 import '../theme_manager.dart';
 import 'camera_screen.dart';
 import 'welcome_screen.dart';
+
+const String _kPrefTapoRelayIp = 'tapo_relay_ip';
+const String _kPrefTapoRelayPort = 'tapo_relay_port';
+const String _kPrefTapoStreamName = 'tapo_stream_name';
+const String _kPrefTapoStreamName2 = 'tapo_stream_name2';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -29,8 +38,17 @@ class _AdminScreenState extends State<AdminScreen> {
   bool _faceRecognition = true;
   bool _petFiltering = false;
 
+  // Live-polled camera reachability, mirrors the user dashboard status tiles.
+  bool _frontCameraOnline = false;
+  bool _backCameraOnline = false;
+  Timer? _cameraStatusTimer;
+  String _tapoRelayIp = kTapoDefaultRelayIp;
+  String _tapoRelayPort = kTapoDefaultRelayPort;
+  String _tapoStreamName = kTapoDefaultStreamName;
+  String _tapoStreamName2 = kTapoDefaultStreamName2;
+
   // Navigation state
-  int _currentPage = 0; // 0: Dashboard, 1: Camera, 2: Statistics, 3: Shield
+  int _currentPage = 0; // 0: Dashboard, 1: Statistics, 2: Shield
   bool _showSettings = false;
   bool _darkModeEnabled = true;
   Color get _primaryTextColor => context.headingText;
@@ -52,6 +70,51 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
         )
         .snapshots();
+    _loadCameraConfigAndPoll();
+  }
+
+  @override
+  void dispose() {
+    _cameraStatusTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadCameraConfigAndPoll() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
+    final savedTapoIp = prefs.getString(_kPrefTapoRelayIp);
+    setState(() {
+      _tapoRelayIp = savedTapoIp == kTapoCameraIp || savedTapoIp == null || savedTapoIp.trim().isEmpty
+          ? kTapoDefaultRelayIp
+          : savedTapoIp;
+      _tapoRelayPort = prefs.getString(_kPrefTapoRelayPort) ?? kTapoDefaultRelayPort;
+      _tapoStreamName = prefs.getString(_kPrefTapoStreamName) ?? kTapoDefaultStreamName;
+      _tapoStreamName2 = prefs.getString(_kPrefTapoStreamName2) ?? kTapoDefaultStreamName2;
+    });
+
+    _pollCameraStatus();
+    _cameraStatusTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollCameraStatus());
+  }
+
+  Future<bool> _isCameraReachable(String streamName) async {
+    try {
+      final uri = Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$streamName');
+      final response = await http.get(uri).timeout(const Duration(seconds: 2));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _pollCameraStatus() async {
+    final front = await _isCameraReachable(_tapoStreamName);
+    final back = await _isCameraReachable(_tapoStreamName2);
+    if (!mounted) return;
+    setState(() {
+      _frontCameraOnline = front;
+      _backCameraOnline = back;
+    });
   }
 
   @override
@@ -75,8 +138,6 @@ class _AdminScreenState extends State<AdminScreen> {
             if (_currentPage == 0)
               _buildDashboard()
             else if (_currentPage == 1)
-              _buildCameraPage()
-            else if (_currentPage == 2)
               _buildStatisticsPage()
             else
               _buildShieldPage(),
@@ -421,88 +482,6 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(height: 24),
           _buildSystemLogsCard(),
           const SizedBox(height: 100), // Space for bottom nav
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCameraPage() {
-    final borderColor = context.canvasBorder;
-    final accent = Theme.of(context).colorScheme.primary;
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildTopBar(),
-          const SizedBox(height: 32),
-          Text(
-            'Camera Stream',
-            style: GoogleFonts.outfit(
-              color: _primaryTextColor,
-              fontSize: 32,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF00E676),
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'LIVE MONITORING',
-                style: GoogleFonts.inter(
-                  color: _secondaryTextColor,
-                  fontSize: 12,
-                  letterSpacing: 1.5,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 32),
-          Text(
-            'ESP32-CAM LIVE',
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: accent,
-              letterSpacing: 1.5,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Esp32SensorBar(hostIp: kEsp32HostIp),
-          const SizedBox(height: 24),
-          Container(
-            decoration: BoxDecoration(
-              color: context.secondarySurface,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: borderColor),
-            ),
-            padding: const EdgeInsets.all(16),
-            child: GridView.count(
-              crossAxisCount: 2,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: 1.0,
-              children: kEsp32DeviceList.map((device) {
-                return CameraFeedCard(
-                  ip: device['ip'] ?? '',
-                  label: device['label'] ?? 'Camera',
-                );
-              }).toList(),
-            ),
-          ),
-          const SizedBox(height: 100),
         ],
       ),
     );
@@ -1824,31 +1803,65 @@ class _AdminScreenState extends State<AdminScreen> {
             ),
           ),
           const SizedBox(height: 14),
-          Esp32SensorBar(hostIp: kEsp32HostIp),
+          Esp32SensorBar(hostIp: kEsp32HostIp, showConditionLabel: true),
           const SizedBox(height: 20),
-          Container(
-            decoration: BoxDecoration(
-              color: context.secondarySurface,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: context.canvasBorder),
-            ),
-            padding: const EdgeInsets.all(16),
-            child: GridView.count(
-              crossAxisCount: 2,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: 1.0,
-              children: kEsp32DeviceList.map((device) {
-                return CameraFeedCard(
-                  ip: device['ip'] ?? '',
-                  label: device['label'] ?? 'Camera',
-                );
-              }).toList(),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: _buildCameraStatusBox(context, 'Front Camera', _frontCameraOnline),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildCameraStatusBox(context, 'Back Camera', _backCameraOnline),
+              ),
+            ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildCameraStatusBox(BuildContext context, String name, bool isOnline) {
+    final panel = context.tertiarySurface;
+    final borderColor = context.canvasBorder;
+    final statusColor = isOnline ? const Color(0xFF4EEF9B) : _secondaryTextColor;
+
+    return Material(
+      color: panel,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 112),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: isOnline ? statusColor : borderColor),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.videocam_outlined, color: statusColor, size: 24),
+            const SizedBox(height: 8),
+            Text(
+              name,
+              style: GoogleFonts.outfit(
+                color: _primaryTextColor,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              isOnline ? 'ONLINE' : 'OFFLINE',
+              style: GoogleFonts.inter(
+                color: statusColor,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2065,33 +2078,24 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
           IconButton(
             icon: Icon(
-              Icons.videocam_rounded,
+              Icons.insert_chart_rounded,
               color: _currentPage == 1
                   ? const Color(0xFF4EEF9B)
                   : (context.isDarkMode ? Colors.white54 : Colors.black54),
             ),
             onPressed: () => setState(() => _currentPage = 1),
           ),
-          IconButton(
-            icon: Icon(
-              Icons.insert_chart_rounded,
-              color: _currentPage == 2
-                  ? const Color(0xFF4EEF9B)
-                  : (context.isDarkMode ? Colors.white54 : Colors.black54),
-            ),
-            onPressed: () => setState(() => _currentPage = 2),
-          ),
           GestureDetector(
-            onTap: () => setState(() => _currentPage = 3),
+            onTap: () => setState(() => _currentPage = 2),
             child: Container(
               width: 56,
               height: 56,
               decoration: BoxDecoration(
-                color: _currentPage == 3
+                color: _currentPage == 2
                     ? const Color(0xFF4EEF9B)
                     : Colors.transparent,
                 shape: BoxShape.circle,
-                border: _currentPage == 3
+                border: _currentPage == 2
                     ? null
                     : Border.all(
                         color: context.isDarkMode ? Colors.white54 : Colors.black12,
@@ -2100,7 +2104,7 @@ class _AdminScreenState extends State<AdminScreen> {
               ),
               child: Icon(
                 Icons.shield,
-                color: _currentPage == 3
+                color: _currentPage == 2
                     ? const Color(0xFF0C100E)
                     : (context.isDarkMode ? Colors.white54 : Colors.black54),
                 size: 28,

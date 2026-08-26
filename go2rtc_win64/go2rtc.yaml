@@ -1,0 +1,15 @@
+streams:
+  tapo1: rtsp://Fizzy13:Hafizi%4013@192.168.1.17:554/stream1
+  tapo2: rtsp://Fizzy13:Hafizi%4013@192.168.1.18:554/stream1
+
+ffmpeg:
+  bin: "C:/Users/User/Desktop/shsma/go2rtc_win64/ffmpeg.exe"
+
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":8554"
+
+webrtc:
+  listen: ":8555"

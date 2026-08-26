@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "shsma: Flutter on Emulator",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "preLaunchTask": "Run Flutter App on Android Emulator"
+    },
+    {
+      "name": "shsma: Chrome (persistent profile)",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "deviceId": "chrome",
+      "args": [
+        "--web-browser-flag=--user-data-dir=${workspaceFolder}/.chrome-debug-profile"
+      ]
+    }
+  ]
+}

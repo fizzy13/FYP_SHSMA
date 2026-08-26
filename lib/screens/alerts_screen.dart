@@ -8,9 +8,12 @@ import '../models/user_model.dart';
 import '../services/security_event_service.dart';
 import '../theme_helpers.dart';
 import 'camera_screen.dart';
+import 'welcome_screen.dart';
 
 class AlertsScreen extends StatefulWidget {
-  const AlertsScreen({super.key});
+  final VoidCallback? onOpenCamera;
+
+  const AlertsScreen({super.key, this.onOpenCamera});
 
   @override
   State<AlertsScreen> createState() => _AlertsScreenState();
@@ -28,10 +31,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
             'Call Police',
             style: GoogleFonts.outfit(fontWeight: FontWeight.w700),
           ),
-          content: Text(
-            'Call 999?',
-            style: GoogleFonts.inter(),
-          ),
+          content: Text('Call 999?', style: GoogleFonts.inter()),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
@@ -48,7 +48,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
 
     if (confirmed != true) return;
 
-    final uri = Uri(scheme: 'tel', path: '999');
+    final uri = Uri(scheme: 'tel', path: '01123228455');
     final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
 
     if (!launched && mounted) {
@@ -56,6 +56,86 @@ class _AlertsScreenState extends State<AlertsScreen> {
         const SnackBar(content: Text('Unable to open phone dialer for 999.')),
       );
     }
+  }
+
+  Future<void> _clearAllAlerts() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'Clear All Notifications?',
+          style: GoogleFonts.outfit(fontWeight: FontWeight.bold),
+        ),
+        content: Text(
+          'This will remove all current motion alert notifications.',
+          style: GoogleFonts.inter(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancel', style: GoogleFonts.outfit()),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('Clear All', style: GoogleFonts.outfit()),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final currentUid = FirebaseAuth.instance.currentUser?.uid;
+      final collection = FirebaseFirestore.instance.collection(
+        kAlertsCollectionName,
+      );
+      final snapshots = await collection.get();
+      for (final doc in snapshots.docs) {
+        final uid = doc.data()['userId'] as String?;
+        if (uid == null || uid.isEmpty || uid == currentUid) {
+          await doc.reference.delete();
+        }
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('All notifications cleared.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to clear notifications: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteAlert(String docId) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection(kAlertsCollectionName)
+          .doc(docId)
+          .delete();
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  Future<void> _simulateTapoMotionAlert() async {
+    final securityService = SecurityEventService();
+    final now = DateTime.now();
+    final formattedTime =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    await securityService.createMotionAlertAndLog(
+      cameraLabel: 'Front Camera',
+      message: '"Front Camera": Motion was detected at $formattedTime.',
+      sourceIp: '192.168.1.17',
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Test Front Camera Motion Alert generated.'),
+      ),
+    );
   }
 
   String _displayNameFromUser(User? user) {
@@ -70,6 +150,19 @@ class _AlertsScreenState extends State<AlertsScreen> {
     }
 
     return 'User';
+  }
+
+  Future<void> _handleSignOut(
+    BuildContext context,
+    AuthService authService,
+  ) async {
+    await authService.logout();
+    if (!context.mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const WelcomeScreen()),
+      (route) => false,
+    );
   }
 
   String _formatTimestamp(dynamic timestamp) {
@@ -89,7 +182,6 @@ class _AlertsScreenState extends State<AlertsScreen> {
     final theme = Theme.of(context);
     final authService = AuthService();
     final surface = context.secondarySurface;
-    final panel = context.tertiarySurface;
     final borderColor = context.canvasBorder;
     final accent = theme.colorScheme.primary;
     final onSurface = theme.colorScheme.onSurface;
@@ -103,14 +195,16 @@ class _AlertsScreenState extends State<AlertsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-               // Header
+              // Header
               StreamBuilder<UserInfo?>(
                 stream: authService.currentUser?.uid != null
-                    ? authService.getUserInfoStreamByUid(authService.currentUser!.uid)
+                    ? authService.getUserInfoStreamByUid(
+                        authService.currentUser!.uid,
+                      )
                     : Stream<UserInfo?>.value(null),
                 builder: (context, snapshot) {
                   final currentUser = authService.currentUser;
-                    final headerName = snapshot.data?.fullName.isNotEmpty == true
+                  final headerName = snapshot.data?.fullName.isNotEmpty == true
                       ? snapshot.data!.fullName
                       : _displayNameFromUser(currentUser);
 
@@ -135,25 +229,56 @@ class _AlertsScreenState extends State<AlertsScreen> {
                           ),
                         ],
                       ),
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: surface,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: borderColor),
-                        ),
-                        child: Icon(Icons.notifications, color: accent, size: 20),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: surface,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: borderColor),
+                            ),
+                            child: Icon(
+                              Icons.notifications,
+                              color: accent,
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.logout,
+                              color: Colors.redAccent,
+                            ),
+                            onPressed: () =>
+                                _handleSignOut(context, authService),
+                          ),
+                        ],
                       ),
                     ],
                   );
                 },
               ),
               const SizedBox(height: 32),
-              Text('Security Alerts', style: GoogleFonts.outfit(fontSize: 32, fontWeight: FontWeight.bold, color: onSurface)),
+              Text(
+                'Security Alerts',
+                style: GoogleFonts.outfit(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: onSurface,
+                ),
+              ),
               const SizedBox(height: 8),
-              Text('REAL-TIME SURVEILLANCE MONITORING', style: GoogleFonts.inter(fontSize: 11, color: muted, letterSpacing: 1.5)),
+              Text(
+                'REAL-TIME SURVEILLANCE MONITORING',
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  color: muted,
+                  letterSpacing: 1.5,
+                ),
+              ),
               const SizedBox(height: 32),
-              
+
               const SizedBox(height: 32),
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: FirebaseFirestore.instance
@@ -165,41 +290,93 @@ class _AlertsScreenState extends State<AlertsScreen> {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  final docs = snapshot.data?.docs ?? [];
+                  final currentUid = authService.currentUser?.uid;
+                  final rawDocs = snapshot.data?.docs ?? [];
+                  final docs = rawDocs.where((doc) {
+                    final uid = doc.data()['userId'] as String?;
+                    return uid == null || uid.isEmpty || uid == currentUid;
+                  }).toList();
+
                   if (docs.isEmpty) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(20),
-                          decoration: BoxDecoration(
-                            color: surface,
-                            borderRadius: BorderRadius.circular(32),
-                            border: Border.all(color: const Color(0xFFD61F1F).withValues(alpha: 0.4), width: 1.5),
+                    return Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 36,
+                      ),
+                      decoration: BoxDecoration(
+                        color: surface,
+                        borderRadius: BorderRadius.circular(32),
+                        border: Border.all(color: borderColor),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.notifications_off_outlined,
+                            size: 56,
+                            color: muted.withOpacity(0.5),
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('No alerts yet', style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.bold, color: onSurface)),
-                              const SizedBox(height: 8),
-                              Text('Your system is running smoothly. No new security alerts found.', style: GoogleFonts.inter(fontSize: 12, color: muted, height: 1.5)),
-                            ],
+                          const SizedBox(height: 16),
+                          Text(
+                            'No notifications',
+                            style: GoogleFonts.outfit(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: onSurface,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 48),
-                      ],
+                          const SizedBox(height: 8),
+                          Text(
+                            'No motion detected. Your system is running smoothly.',
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.inter(
+                              fontSize: 13,
+                              color: muted,
+                              height: 1.4,
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          OutlinedButton.icon(
+                            onPressed: _simulateTapoMotionAlert,
+                            icon: const Icon(Icons.videocam_outlined, size: 18),
+                            label: Text(
+                              'Simulate Tapo Motion Alert',
+                              style: GoogleFonts.inter(fontSize: 12),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: accent,
+                              side: BorderSide(color: accent.withOpacity(0.5)),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     );
                   }
 
                   final latestDoc = docs.first;
                   final latest = latestDoc.data();
-                  final alertType = latest['type'] as String? ?? latest['alerts'] as String? ?? 'SECURITY';
-                  final alertMessage = latest['message'] as String? ?? 'New alert received';
-                  final alertLocation = latest['location'] as String? ?? 'Unknown location';
+                  final alertType =
+                      latest['type'] as String? ??
+                      latest['alerts'] as String? ??
+                      'Motion Alert';
+                  final alertMessage =
+                      latest['message'] as String? ??
+                      'Motion detected at camera';
+                  final alertLocation =
+                      latest['location'] as String? ?? 'Tapo Camera';
                   final alertStatus = latest['status'] as String? ?? 'ACTIVE';
                   final alertTime = _formatTimestamp(latest['timestamp']);
 
-                  if (alertStatus.toUpperCase() == 'LIVE' && _lastShownAlertId != latestDoc.id) {
+                  if (alertStatus.toUpperCase() == 'LIVE' &&
+                      _lastShownAlertId != latestDoc.id) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (!mounted) return;
                       _lastShownAlertId = latestDoc.id;
@@ -209,12 +386,23 @@ class _AlertsScreenState extends State<AlertsScreen> {
                         builder: (context) {
                           return AlertDialog(
                             backgroundColor: surface,
-                            title: Text('Motion Detected', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
-                            content: Text(alertMessage, style: GoogleFonts.inter()),
+                            title: Text(
+                              'Motion Detected',
+                              style: GoogleFonts.outfit(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            content: Text(
+                              alertMessage,
+                              style: GoogleFonts.inter(),
+                            ),
                             actions: [
                               TextButton(
                                 onPressed: () => Navigator.of(context).pop(),
-                                child: Text('Dismiss', style: GoogleFonts.outfit(color: accent)),
+                                child: Text(
+                                  'Dismiss',
+                                  style: GoogleFonts.outfit(color: accent),
+                                ),
                               ),
                             ],
                           );
@@ -230,15 +418,24 @@ class _AlertsScreenState extends State<AlertsScreen> {
                         Container(
                           width: double.infinity,
                           margin: const EdgeInsets.only(bottom: 16),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
                           decoration: BoxDecoration(
                             color: const Color(0xFFFF6B6B).withOpacity(0.12),
                             borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.35)),
+                            border: Border.all(
+                              color: const Color(0xFFFF6B6B).withOpacity(0.35),
+                            ),
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.wifi_tethering, color: Color(0xFFFF6B6B), size: 18),
+                              const Icon(
+                                Icons.wifi_tethering,
+                                color: Color(0xFFFF6B6B),
+                                size: 18,
+                              ),
                               const SizedBox(width: 10),
                               Expanded(
                                 child: Text(
@@ -258,9 +455,20 @@ class _AlertsScreenState extends State<AlertsScreen> {
                         decoration: BoxDecoration(
                           color: surface,
                           borderRadius: BorderRadius.circular(32),
-                          border: Border.all(color: const Color(0xFFD61F1F).withValues(alpha: 0.4), width: 1.5),
+                          border: Border.all(
+                            color: const Color(
+                              0xFFD61F1F,
+                            ).withValues(alpha: 0.4),
+                            width: 1.5,
+                          ),
                           boxShadow: [
-                            BoxShadow(color: const Color(0xFFD61F1F).withValues(alpha: 0.05), blurRadius: 40, spreadRadius: 5),
+                            BoxShadow(
+                              color: const Color(
+                                0xFFD61F1F,
+                              ).withValues(alpha: 0.05),
+                              blurRadius: 40,
+                              spreadRadius: 5,
+                            ),
                           ],
                         ),
                         child: Column(
@@ -278,15 +486,34 @@ class _AlertsScreenState extends State<AlertsScreen> {
                                     top: 12,
                                     left: 12,
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                      decoration: BoxDecoration(color: const Color(0xFFFF6B6B), borderRadius: BorderRadius.circular(12)),
-                                      child: Text('LIVE FEED', style: GoogleFonts.inter(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFFF6B6B),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        'LIVE FEED',
+                                        style: GoogleFonts.inter(
+                                          color: Colors.white,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
                                     ),
                                   ),
                                   Positioned(
                                     bottom: 12,
                                     right: 12,
-                                    child: Text('$alertLocation • $alertTime', style: GoogleFonts.inter(color: Colors.white, fontSize: 10)),
+                                    child: Text(
+                                      '$alertLocation • $alertTime',
+                                      style: GoogleFonts.inter(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                      ),
+                                    ),
                                   ),
                                 ],
                               ),
@@ -294,32 +521,76 @@ class _AlertsScreenState extends State<AlertsScreen> {
                             const SizedBox(height: 20),
                             Row(
                               children: [
-                                const Icon(Icons.warning_amber_rounded, color: Color(0xFFFF6B6B), size: 24),
+                                const Icon(
+                                  Icons.warning_amber_rounded,
+                                  color: Color(0xFFFF6B6B),
+                                  size: 24,
+                                ),
                                 const SizedBox(width: 8),
-                                Text(alertType, style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.bold, color: const Color(0xFFFF6B6B))),
+                                Text(
+                                  alertType,
+                                  style: GoogleFonts.outfit(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: const Color(0xFFFF6B6B),
+                                  ),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 8),
-                            Text(alertLocation, style: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white)),
+                            Text(
+                              alertLocation,
+                              style: GoogleFonts.outfit(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
                             const SizedBox(height: 12),
-                            Text(alertMessage, style: GoogleFonts.inter(fontSize: 12, color: Colors.white54, height: 1.5)),
+                            Text(
+                              alertMessage,
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                color: Colors.white54,
+                                height: 1.5,
+                              ),
+                            ),
                             const SizedBox(height: 24),
                             Row(
                               children: [
                                 Expanded(
                                   child: ElevatedButton(
                                     onPressed: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(builder: (context) => const CameraScreen()),
-                                      );
+                                      if (widget.onOpenCamera != null) {
+                                        widget.onOpenCamera!();
+                                      } else {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) =>
+                                                const CameraScreen(),
+                                          ),
+                                        );
+                                      }
                                     },
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: accent,
-                                      padding: const EdgeInsets.symmetric(vertical: 16),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 16,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(24),
+                                      ),
                                     ),
-                                    child: Text('VIEW\nCAMERA', textAlign: TextAlign.center, style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: const Color(0xFF0C100E), fontSize: 11)),
+                                    child: Text(
+                                      'VIEW\nCAMERA',
+                                      textAlign: TextAlign.center,
+                                      style: GoogleFonts.inter(
+                                        fontWeight: FontWeight.bold,
+                                        color: const Color(0xFF0C100E),
+                                        fontSize: 11,
+                                      ),
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(width: 16),
@@ -328,10 +599,22 @@ class _AlertsScreenState extends State<AlertsScreen> {
                                     onPressed: _confirmAndCallPolice,
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: surface,
-                                      padding: const EdgeInsets.symmetric(vertical: 16),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 16,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(24),
+                                      ),
                                     ),
-                                    child: Text('CALL POLICE', textAlign: TextAlign.center, style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 11)),
+                                    child: Text(
+                                      'CALL POLICE',
+                                      textAlign: TextAlign.center,
+                                      style: GoogleFonts.inter(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ],
@@ -339,83 +622,81 @@ class _AlertsScreenState extends State<AlertsScreen> {
                           ],
                         ),
                       ),
-                      const SizedBox(height: 48),
-                      ...docs.take(3).map((alert) {
-                        final data = alert.data();
-                        return _buildEventCard(
-                          context,
-                          data['type'] as String? ?? 'Alert',
-                          data['location'] as String? ?? 'Unknown location',
-                          _formatTimestamp(data['timestamp']),
-                          data['status'] as String? ?? 'SYSTEM',
-                          data['message'] as String? ?? '',
-                          null,
-                          labelColor: const Color(0xFFFF6B6B),
-                        );
-                      }),
+                      const SizedBox(height: 32),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'LIVE NOTIFICATIONS (${docs.length})',
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: muted,
+                              letterSpacing: 1.5,
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: _clearAllAlerts,
+                            icon: const Icon(
+                              Icons.delete_sweep_outlined,
+                              size: 16,
+                              color: Colors.redAccent,
+                            ),
+                            label: Text(
+                              'Clear All',
+                              style: GoogleFonts.inter(
+                                fontSize: 11,
+                                color: Colors.redAccent,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 420),
+                        child: Scrollbar(
+                          thumbVisibility: docs.length > 3,
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            physics: const BouncingScrollPhysics(),
+                            itemCount: docs.length,
+                            itemBuilder: (context, index) {
+                              final alertDoc = docs[index];
+                              final data = alertDoc.data();
+                              final docId = alertDoc.id;
+                              final type =
+                                  data['type'] as String? ??
+                                  data['alerts'] as String? ??
+                                  'Motion Alert';
+                              final location =
+                                  data['location'] as String? ?? 'Tapo Camera';
+                              final message =
+                                  data['message'] as String? ??
+                                  'Motion detected';
+                              final time = _formatTimestamp(data['timestamp']);
+                              final status =
+                                  data['status'] as String? ?? 'LIVE';
+
+                              return _buildEventCard(
+                                context,
+                                type,
+                                location,
+                                time,
+                                status,
+                                message,
+                                null,
+                                labelColor: const Color(0xFFFF6B6B),
+                                onDelete: () => _deleteAlert(docId),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
                     ],
                   );
                 },
-              ),
-              const SizedBox(height: 32),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('RECENT EVENTS', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: muted, letterSpacing: 2.0)),
-                  Text('TODAY, OCT 24', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: accent, letterSpacing: 1.0)),
-                ],
-              ),
-              const SizedBox(height: 16),
-              
-              _buildEventCard(context, 'Vehicle\nDetected', 'Driveway Main\nEntrance', '14:22 PM', 'AI\nRECOGNITION', 'Normal\nActivity', 'assets/vehicle_event.png'),
-              _buildEventCard(context, 'Animal Spotted', 'Front Porch Camera', '11:05 AM', 'PIR SENSOR', 'Ignored Alert', null),
-              _buildEventCard(context, 'Package\nDelivered', 'Side Entrance', '09:40 AM', 'AI LABEL', 'Delivery Confirmed', null, labelColor: const Color(0xFF4EEF9B)),
-              
-              const SizedBox(height: 32),
-              Text('YESTERDAY', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: muted, letterSpacing: 2.0)),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(color: panel, borderRadius: BorderRadius.circular(24)),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(color: panel, borderRadius: BorderRadius.circular(16)),
-                      child: const Icon(Icons.wifi_off, color: Colors.white30, size: 32),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('Connection Lost', style: GoogleFonts.outfit(fontWeight: FontWeight.w600, fontSize: 16, color: Colors.white)),
-                              Text('23:15 PM', style: GoogleFonts.inter(fontSize: 10, color: Colors.white30)),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text('Garage Wi-Fi Node', style: GoogleFonts.inter(fontSize: 12, color: muted)),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                decoration: BoxDecoration(color: const Color(0xFFD61F1F).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(12)),
-                                child: Text('SYSTEM LOG', style: GoogleFonts.inter(color: const Color(0xFFD61F1F), fontSize: 9, fontWeight: FontWeight.bold)),
-                              ),
-                              const SizedBox(width: 8),
-                              Text('AUTO-RESOLVED', style: GoogleFonts.inter(fontSize: 9, color: const Color(0xFFD61F1F))),
-                            ],
-                          )
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
               ),
               const SizedBox(height: 32),
             ],
@@ -425,14 +706,24 @@ class _AlertsScreenState extends State<AlertsScreen> {
     );
   }
 
-  Widget _buildEventCard(BuildContext context, String title, String subtitle, String time, String tag, String note, String? imagePath, {Color? labelColor}) {
+  Widget _buildEventCard(
+    BuildContext context,
+    String title,
+    String subtitle,
+    String time,
+    String tag,
+    String note,
+    String? imagePath, {
+    Color? labelColor,
+    VoidCallback? onDelete,
+  }) {
     final theme = Theme.of(context);
     final surface = context.secondarySurface;
-    final borderColor = context.canvasBorder;
     final accent = theme.colorScheme.primary;
     final muted = context.mutedText;
     final panel = context.tertiarySurface;
     final noteColor = labelColor ?? context.mutedText;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(16),
@@ -442,48 +733,97 @@ class _AlertsScreenState extends State<AlertsScreen> {
       ),
       child: Row(
         children: [
-           Container(
-             width: 80,
-             height: 80,
-             decoration: BoxDecoration(
-               color: const Color(0xFF1D221F),
-               borderRadius: BorderRadius.circular(16),
-               image: imagePath != null ? DecorationImage(image: AssetImage(imagePath), fit: BoxFit.cover) : null,
-             ),
-             child: imagePath == null ? Icon(Icons.image_outlined, color: borderColor) : null,
-           ),
-           const SizedBox(width: 16),
-           Expanded(
-             child: Column(
-               crossAxisAlignment: CrossAxisAlignment.start,
-               children: [
-                 Row(
-                   crossAxisAlignment: CrossAxisAlignment.start,
-                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                   children: [
-                     Expanded(child: Text(title, style: GoogleFonts.outfit(fontWeight: FontWeight.w600, fontSize: 16, color: Colors.white))),
-                     Text(time, style: GoogleFonts.inter(fontSize: 10, color: muted)),
-                   ],
-                 ),
-                 const SizedBox(height: 4),
-                 Text(subtitle, style: GoogleFonts.inter(fontSize: 12, color: muted)),
-                 const SizedBox(height: 12),
-                 Row(
-                   children: [
-                     Container(
-                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                       decoration: BoxDecoration(color: panel, borderRadius: BorderRadius.circular(12)),
-                       child: Text(tag.replaceAll('\n', ' '), style: GoogleFonts.inter(color: accent, fontSize: 9, fontWeight: FontWeight.bold)),
-                     ),
-                     const SizedBox(width: 8),
-                     Expanded(child: Text(note.replaceAll('\n', ' '), style: GoogleFonts.inter(fontSize: 10, color: noteColor), overflow: TextOverflow.ellipsis)),
-                   ],
-                 ),
-               ],
-             ),
-           ),
-           const SizedBox(width: 8),
-           Icon(Icons.chevron_right, color: muted, size: 20),
+          Container(
+            width: 70,
+            height: 70,
+            decoration: BoxDecoration(
+              color: const Color(0xFF1D221F),
+              borderRadius: BorderRadius.circular(16),
+              image: imagePath != null
+                  ? DecorationImage(
+                      image: AssetImage(imagePath),
+                      fit: BoxFit.cover,
+                    )
+                  : null,
+            ),
+            child: imagePath == null
+                ? Icon(Icons.videocam_outlined, color: accent, size: 28)
+                : null,
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 16,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      time,
+                      style: GoogleFonts.inter(fontSize: 10, color: muted),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: GoogleFonts.inter(fontSize: 12, color: muted),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: panel,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        tag.replaceAll('\n', ' '),
+                        style: GoogleFonts.inter(
+                          color: accent,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        note.replaceAll('\n', ' '),
+                        style: GoogleFonts.inter(
+                          fontSize: 10,
+                          color: noteColor,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          if (onDelete != null)
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white30, size: 18),
+              onPressed: onDelete,
+            )
+          else
+            Icon(Icons.chevron_right, color: muted, size: 20),
         ],
       ),
     );

@@ -24,12 +24,12 @@
 #include "esp_http_server.h"
 
 // ===== CHANGE THESE =====
-const char* ssid     = "arifidris";
-const char* password = "arif1412";
+const char* ssid     = "HF@JHI";
+const char* password = "hfmmmnnh";
 
 // Fixed IP for host camera
 IPAddress local_IP(192, 168, 1, 100); // Host is always .100
-IPAddress gateway(192, 168, 1, 1);    // your router IP — run ipconfig on PC to check
+IPAddress gateway(192, 168, 1, 254);    // your router IP — run ipconfig on PC to check
 IPAddress subnet(255, 255, 255, 0);
 // ========================
 
@@ -72,6 +72,18 @@ float getDistanceCm() {
 }
 
 // ---------- /snapshot endpoint ----------
+// Browsers (Chrome) send an OPTIONS preflight before cross-origin GETs to a
+// private-network IP and require Access-Control-Allow-Private-Network: true.
+esp_err_t cors_preflight_handler(httpd_req_t *req) {
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, OPTIONS");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Private-Network", "true");
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
 esp_err_t snapshot_handler(httpd_req_t *req) {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
@@ -81,6 +93,7 @@ esp_err_t snapshot_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Private-Network", "true");
   httpd_resp_set_hdr(req, "Connection", "close");
   httpd_resp_send(req, (const char *)fb->buf, fb->len);
   esp_camera_fb_return(fb);
@@ -97,6 +110,7 @@ esp_err_t stream_handler(httpd_req_t *req) {
   char part_buf[64];
   httpd_resp_set_type(req, STREAM_CONTENT);
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Private-Network", "true");
 
   while (true) {
     camera_fb_t *fb = esp_camera_fb_get();
@@ -127,6 +141,7 @@ esp_err_t sensor_handler(httpd_req_t *req) {
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Private-Network", "true");
   httpd_resp_sendstr(req, json);
   return ESP_OK;
 }
@@ -136,14 +151,20 @@ void startServer() {
   config.server_port      = 80;
   config.lru_purge_enable = true;
 
-  httpd_uri_t snapshot_uri = { .uri = "/snapshot", .method = HTTP_GET, .handler = snapshot_handler };
-  httpd_uri_t stream_uri   = { .uri = "/stream",   .method = HTTP_GET, .handler = stream_handler   };
-  httpd_uri_t sensor_uri   = { .uri = "/sensor",   .method = HTTP_GET, .handler = sensor_handler   };
+  httpd_uri_t snapshot_uri  = { .uri = "/snapshot", .method = HTTP_GET,     .handler = snapshot_handler };
+  httpd_uri_t stream_uri    = { .uri = "/stream",   .method = HTTP_GET,     .handler = stream_handler   };
+  httpd_uri_t sensor_uri    = { .uri = "/sensor",   .method = HTTP_GET,     .handler = sensor_handler   };
+  httpd_uri_t snapshot_opt  = { .uri = "/snapshot", .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
+  httpd_uri_t stream_opt    = { .uri = "/stream",   .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
+  httpd_uri_t sensor_opt    = { .uri = "/sensor",   .method = HTTP_OPTIONS, .handler = cors_preflight_handler };
 
   if (httpd_start(&server_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(server_httpd, &snapshot_uri);
     httpd_register_uri_handler(server_httpd, &stream_uri);
     httpd_register_uri_handler(server_httpd, &sensor_uri);
+    httpd_register_uri_handler(server_httpd, &snapshot_opt);
+    httpd_register_uri_handler(server_httpd, &stream_opt);
+    httpd_register_uri_handler(server_httpd, &sensor_opt);
     Serial.println("Server started.");
   }
 }

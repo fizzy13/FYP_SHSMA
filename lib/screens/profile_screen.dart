@@ -366,9 +366,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ],
                   ),
-                  GestureDetector(
-                    onTap: _navigateToEditProfile,
-                    child: Icon(Icons.settings, color: iconColor, size: 24),
+                  Row(
+                    children: [
+                      GestureDetector(
+                        onTap: _navigateToEditProfile,
+                        child: Icon(Icons.person, color: iconColor, size: 24),
+                      ),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        icon: const Icon(Icons.logout, color: Colors.redAccent),
+                        onPressed: _handleSignOut,
+                      ),
+                    ],
                   ),
                 ],
               ),

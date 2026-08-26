@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../services/tapo_motion_service.dart';
 import '../theme_helpers.dart';
 import 'dashboard_screen.dart';
 import 'camera_screen.dart';
@@ -16,27 +17,42 @@ class RootScreen extends StatefulWidget {
 class _RootScreenState extends State<RootScreen> {
   int _selectedIndex = 0;
 
-  final List<Widget> _screens = [
-    const DashboardScreen(),
+  late final List<Widget> _screens = [
+    DashboardScreen(onOpenCamera: () => setState(() => _selectedIndex = 1)),
     const CameraScreen(),
-    const AlertsScreen(),
+    AlertsScreen(onOpenCamera: () => setState(() => _selectedIndex = 1)),
     const ProfileScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    TapoMotionService.instance.startMonitoring();
+  }
+
+  @override
+  void dispose() {
+    TapoMotionService.instance.stopMonitoring();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final navBackground = theme.bottomNavigationBarTheme.backgroundColor ?? context.navigationBarBackground;
-    final navInactiveColor = theme.bottomNavigationBarTheme.unselectedItemColor ?? context.navigationBarInactive;
-    final selectedIconColor = theme.bottomNavigationBarTheme.selectedItemColor ?? const Color(0xFF4EEF9B);
+    final navBackground =
+        theme.bottomNavigationBarTheme.backgroundColor ??
+        context.navigationBarBackground;
+    final navInactiveColor =
+        theme.bottomNavigationBarTheme.unselectedItemColor ??
+        context.navigationBarInactive;
+    final selectedIconColor =
+        theme.bottomNavigationBarTheme.selectedItemColor ??
+        const Color(0xFF4EEF9B);
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: _screens,
-      ),
+      body: IndexedStack(index: _selectedIndex, children: _screens),
       bottomNavigationBar: Theme(
         data: theme.copyWith(
           splashColor: Colors.transparent,
@@ -47,13 +63,16 @@ class _RootScreenState extends State<RootScreen> {
           type: BottomNavigationBarType.fixed,
           selectedItemColor: selectedIconColor,
           unselectedItemColor: navInactiveColor,
-          selectedLabelStyle: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600),
+          selectedLabelStyle: GoogleFonts.inter(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+          ),
           unselectedLabelStyle: GoogleFonts.inter(fontSize: 10),
           showUnselectedLabels: true,
           currentIndex: _selectedIndex,
           onTap: (i) => setState(() => _selectedIndex = i),
           items: [
-             BottomNavigationBarItem(
+            BottomNavigationBarItem(
               icon: _buildIcon(Icons.home, 0, isDark: isDark),
               label: _selectedIndex == 0 ? '' : 'HOME',
             ),
@@ -90,12 +109,18 @@ class _RootScreenState extends State<RootScreen> {
             ),
           ],
         ),
-        child: Icon(iconData, color: isDark ? const Color(0xFF0C100E) : Colors.white),
+        child: Icon(
+          iconData,
+          color: isDark ? const Color(0xFF0C100E) : Colors.white,
+        ),
       );
     }
     return Padding(
       padding: const EdgeInsets.only(top: 10),
-      child: Icon(iconData, color: isDark ? Colors.white70 : const Color(0xFF4C5865)),
+      child: Icon(
+        iconData,
+        color: isDark ? Colors.white70 : const Color(0xFF4C5865),
+      ),
     );
   }
 }

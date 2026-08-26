@@ -33,6 +33,13 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Persistent Chrome debug profile so SharedPreferences (camera IP config) survives
+# across `flutter run -d chrome` sessions.
+.chrome-debug-profile/
+
+# Executables in go2rtc relay folder
+go2rtc_win64/*.exe
+
 # Symbolication related
 app.*.symbols
 

@@ -8,27 +8,56 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:just_audio/just_audio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../auth_service.dart';
 import '../models/user_model.dart';
 import '../services/notification_preferences_service.dart';
 import '../services/security_event_service.dart';
 import '../theme_helpers.dart';
+import 'welcome_screen.dart';
 
 const bool kUseEsp32CameraFeeds = true;
 
-// ESP32-CAM endpoints from CAM IP.txt
-const String kEsp32HostIp = '192.168.1.100';
+const String _kPrefHostIp = 'esp32_host_ip';
+
+const String _kPrefTapoRelayIp = 'tapo_relay_ip';
+const String _kPrefTapoRelayPort = 'tapo_relay_port';
+const String _kPrefTapoStreamName = 'tapo_stream_name';
+const String _kPrefTapoStreamName2 = 'tapo_stream_name2';
+const String _kPrefTapoCameraIp = 'tapo_camera_ip';
+const String _kPrefTapoCamera2Ip = 'tapo_camera2_ip';
+
+// ESP32-CAM endpoints from CAM IP.txt.
+// Overridable via --dart-define so the correct IP survives even when the
+// browser's SharedPreferences/localStorage gets wiped (e.g. flutter run -d chrome
+// uses a fresh temporary Chrome profile on every launch, resetting anything saved
+// via the in-app "Set IP" dialog back to these defaults).
+const String kEsp32HostIp = String.fromEnvironment('ESP32_HOST_IP', defaultValue: '192.168.1.100');
+const String kEsp32Cam2Ip = String.fromEnvironment('ESP32_CAM2_IP', defaultValue: '192.168.1.101');
 const String kEsp32SnapshotPath = '/snapshot';
 const String kEsp32StreamPath = '/stream';
 const String kEsp32SensorPath = '/sensor';
 
 const List<Map<String, String>> kEsp32DeviceList = [
   {'ip': kEsp32HostIp, 'label': 'Host Camera'},
-  {'ip': '192.168.1.101', 'label': 'Camera 2'},
-  {'ip': '192.168.1.102', 'label': 'Camera 3'},
-  {'ip': '192.168.1.103', 'label': 'Camera 4'},
+  {'ip': kEsp32Cam2Ip, 'label': 'Camera 2'},
 ];
+
+// Tapo cams only speak RTSP; a go2rtc relay (fronted by scripts/cors_proxy.dart
+// for CORS/Private-Network-Access) re-serves it as plain HTTP MJPEG/snapshot.
+// The relay host is the PC running go2rtc/cors_proxy, while the Tapo camera source is 192.168.1.17.
+const String kTapoDefaultRelayIp = String.fromEnvironment('TAPO_RELAY_IP', defaultValue: '192.168.1.13');
+const String kTapoCameraIp = '192.168.1.17';
+const String kTapoCamera2Ip = '192.168.1.18';
+const String kTapoDefaultRelayPort = '8090';
+const String kTapoDefaultStreamName = 'tapo1';
+const String kTapoDefaultStreamName2 = 'tapo2';
+const String kGo2rtcSnapshotPath = '/api/frame.jpeg';
+const String kGo2rtcStreamPath = '/api/stream.mjpeg';
+// go2rtc transcodes the RTSP audio track to MP3 on the fly (requires ffmpeg, already configured).
+const String kGo2rtcAudioPath = '/api/stream.mp3';
 
 const double kUltrasonicMotionThresholdCm = 120.0;
 const Duration kUltrasonicAlertCooldown = Duration(seconds: 15);
@@ -47,8 +76,89 @@ String _displayNameFromUser(User? user) {
   return 'User';
 }
 
-class CameraScreen extends StatelessWidget {
+class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
+
+  @override
+  State<CameraScreen> createState() => _CameraScreenState();
+}
+
+class _CameraScreenState extends State<CameraScreen> {
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _soundEnabled = false;
+  bool _soundLoading = false;
+  String _tapoRelayIp = kTapoDefaultRelayIp;
+  String _tapoRelayPort = kTapoDefaultRelayPort;
+  String _tapoStreamName = kTapoDefaultStreamName;
+
+  String get _tapoAudioUrl =>
+      'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcAudioPath?src=$_tapoStreamName';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAudioConfig();
+  }
+
+  Future<void> _loadAudioConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final savedTapoIp = prefs.getString(_kPrefTapoRelayIp);
+    setState(() {
+      _tapoRelayIp = savedTapoIp == kTapoCameraIp || savedTapoIp == null || savedTapoIp.trim().isEmpty
+          ? kTapoDefaultRelayIp
+          : savedTapoIp;
+      _tapoRelayPort = prefs.getString(_kPrefTapoRelayPort) ?? kTapoDefaultRelayPort;
+      _tapoStreamName = prefs.getString(_kPrefTapoStreamName) ?? kTapoDefaultStreamName;
+    });
+  }
+
+  Future<void> _toggleSound() async {
+    if (_soundLoading) return;
+
+    if (_soundEnabled) {
+      await _audioPlayer.stop();
+      if (!mounted) return;
+      setState(() => _soundEnabled = false);
+      return;
+    }
+
+    setState(() => _soundLoading = true);
+    try {
+      await _audioPlayer.setUrl(_tapoAudioUrl);
+      await _audioPlayer.play();
+      if (!mounted) return;
+      setState(() {
+        _soundEnabled = true;
+        _soundLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _soundEnabled = false;
+        _soundLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to start live audio. Check the camera relay connection.')),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _audioPlayer.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleSignOut(BuildContext context, AuthService authService) async {
+    await authService.logout();
+    if (!context.mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const WelcomeScreen()),
+      (route) => false,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -102,18 +212,27 @@ class CameraScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: surface,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: borderColor),
-                        ),
-                        child: Icon(
-                          Icons.notifications,
-                          color: accent,
-                          size: 20,
-                        ),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: surface,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: borderColor),
+                            ),
+                            child: Icon(
+                              Icons.notifications,
+                              color: accent,
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          IconButton(
+                            icon: const Icon(Icons.logout, color: Colors.redAccent),
+                            onPressed: () => _handleSignOut(context, authService),
+                          ),
+                        ],
                       ),
                     ],
                   );
@@ -369,17 +488,38 @@ class CameraScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 40),
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: surface,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: borderColor),
-                    ),
-                    child: Icon(
-                      Icons.volume_up,
-                      color: isDark ? Colors.white54 : Colors.black54,
-                      size: 28,
+                  GestureDetector(
+                    onTap: _toggleSound,
+                    child: Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: _soundEnabled ? accent : surface,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: borderColor),
+                        boxShadow: _soundEnabled
+                            ? [
+                                BoxShadow(
+                                  color: accent.withValues(alpha: 0.3),
+                                  blurRadius: 20,
+                                  spreadRadius: 5,
+                                ),
+                              ]
+                            : null,
+                      ),
+                      child: _soundLoading
+                          ? SizedBox(
+                              width: 28,
+                              height: 28,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: isDark ? Colors.white54 : Colors.black54,
+                              ),
+                            )
+                          : Icon(
+                              _soundEnabled ? Icons.volume_up : Icons.volume_off,
+                              color: _soundEnabled ? const Color(0xFF0C100E) : (isDark ? Colors.white54 : Colors.black54),
+                              size: 28,
+                            ),
                     ),
                   ),
                 ],
@@ -399,9 +539,10 @@ class CameraScreen extends StatelessWidget {
                   ),
                   const SizedBox(width: 48),
                   Text(
-                    'SOUND',
+                    _soundEnabled ? 'SOUND ON' : 'SOUND',
                     style: GoogleFonts.inter(
-                      color: context.mutedText,
+                      color: _soundEnabled ? accent : context.mutedText,
+                      fontWeight: _soundEnabled ? FontWeight.bold : FontWeight.normal,
                       fontSize: 12,
                       letterSpacing: 1.5,
                     ),
@@ -409,57 +550,6 @@ class CameraScreen extends StatelessWidget {
                 ],
               ),
 
-              const SizedBox(height: 48),
-              Text(
-                'NETWORK NODES',
-                style: GoogleFonts.inter(
-                  color: context.mutedText,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                  letterSpacing: 2.0,
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: FirebaseFirestore.instance.collection('devices').snapshots(),
-                builder: (context, snapshot) {
-                  final docs = snapshot.data?.docs ?? [];
-                  final cards = docs.take(4).map((device) {
-                    final data = device.data();
-                    return _buildNodeCard(
-                      context,
-                      data['device_name'] as String? ?? 'DEVICE NODE',
-                      null,
-                      isActive: (data['status']?.toString().toLowerCase() == 'online'),
-                    );
-                  }).toList();
-
-                  while (cards.length < 4) {
-                    cards.add(_buildNodeCard(context, 'OFFLINE NODE', null));
-                  }
-
-                  return Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(child: cards[0]),
-                          const SizedBox(width: 16),
-                          Expanded(child: cards[1]),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(child: cards[2]),
-                          const SizedBox(width: 16),
-                          Expanded(child: cards[3]),
-                        ],
-                      ),
-                    ],
-                  );
-                },
-              ),
             ],
           ),
         ),
@@ -468,6 +558,216 @@ class CameraScreen extends StatelessWidget {
   }
 
   Widget _buildEsp32CameraSection(BuildContext context) {
+    return const Esp32CameraSection();
+  }
+
+}
+
+class Esp32CameraSection extends StatefulWidget {
+  const Esp32CameraSection({super.key});
+
+  @override
+  State<Esp32CameraSection> createState() => _Esp32CameraSectionState();
+}
+
+class _Esp32CameraSectionState extends State<Esp32CameraSection> {
+  String _hostIp = kEsp32HostIp;
+  String _tapoRelayIp = kTapoDefaultRelayIp;
+  String _tapoRelayPort = kTapoDefaultRelayPort;
+  String _tapoStreamName = kTapoDefaultStreamName;
+  String _tapoStreamName2 = kTapoDefaultStreamName2;
+  String _tapoCameraIp = kTapoCameraIp;
+  String _tapoCamera2Ip = kTapoCamera2Ip;
+
+  String get _tapoSnapshotUrl => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$_tapoStreamName';
+  String get _tapoStreamUrl => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcStreamPath?src=$_tapoStreamName';
+
+  // Back camera shares the same relay host/port, only the go2rtc stream name differs.
+  String get _tapoSnapshotUrl2 => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$_tapoStreamName2';
+  String get _tapoStreamUrl2 => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcStreamPath?src=$_tapoStreamName2';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadIpConfig();
+  }
+
+  Future<void> _loadIpConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
+    final savedTapoIp = prefs.getString(_kPrefTapoRelayIp);
+    final effectiveTapoRelayIp = savedTapoIp == kTapoCameraIp || savedTapoIp == null || savedTapoIp.trim().isEmpty
+        ? kTapoDefaultRelayIp
+        : savedTapoIp;
+
+    setState(() {
+      _hostIp = prefs.getString(_kPrefHostIp) ?? kEsp32HostIp;
+      _tapoRelayIp = effectiveTapoRelayIp;
+      _tapoRelayPort = prefs.getString(_kPrefTapoRelayPort) ?? kTapoDefaultRelayPort;
+      _tapoStreamName = prefs.getString(_kPrefTapoStreamName) ?? kTapoDefaultStreamName;
+      _tapoStreamName2 = prefs.getString(_kPrefTapoStreamName2) ?? kTapoDefaultStreamName2;
+      _tapoCameraIp = prefs.getString(_kPrefTapoCameraIp) ?? kTapoCameraIp;
+      _tapoCamera2Ip = prefs.getString(_kPrefTapoCamera2Ip) ?? kTapoCamera2Ip;
+    });
+  }
+
+  Future<void> _saveIpConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kPrefHostIp, _hostIp);
+    await prefs.setString(_kPrefTapoRelayIp, _tapoRelayIp);
+    await prefs.setString(_kPrefTapoRelayPort, _tapoRelayPort);
+    await prefs.setString(_kPrefTapoStreamName, _tapoStreamName);
+    await prefs.setString(_kPrefTapoStreamName2, _tapoStreamName2);
+    await prefs.setString(_kPrefTapoCameraIp, _tapoCameraIp);
+    await prefs.setString(_kPrefTapoCamera2Ip, _tapoCamera2Ip);
+  }
+
+  bool _isValidIpv4(String value) {
+    final parts = value.trim().split('.');
+    if (parts.length != 4) return false;
+    for (final part in parts) {
+      final n = int.tryParse(part);
+      if (n == null || n < 0 || n > 255) return false;
+    }
+    return true;
+  }
+
+  Future<void> _showIpConfigDialog() async {
+    final tapoIpController = TextEditingController(text: _tapoRelayIp);
+    final tapoPortController = TextEditingController(text: _tapoRelayPort);
+    final tapoStreamController = TextEditingController(text: _tapoStreamName);
+    final tapoStreamController2 = TextEditingController(text: _tapoStreamName2);
+    final tapoCameraIpController = TextEditingController(text: _tapoCameraIp);
+    final tapoCamera2IpController = TextEditingController(text: _tapoCamera2Ip);
+
+    void resetControllers() {
+      tapoIpController.text = _tapoRelayIp;
+      tapoPortController.text = _tapoRelayPort;
+      tapoStreamController.text = _tapoStreamName;
+      tapoStreamController2.text = _tapoStreamName2;
+      tapoCameraIpController.text = _tapoCameraIp;
+      tapoCamera2IpController.text = _tapoCamera2Ip;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        var isEditing = false;
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            return AlertDialog(
+              title: const Text('Camera Configuration'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('Camera Devices (Tapo via relay)', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.bold)),
+                    ),
+                    TextField(
+                      controller: tapoIpController,
+                      enabled: isEditing,
+                      decoration: const InputDecoration(labelText: 'Relay PC IP (camera is 192.168.1.17)'),
+                    ),
+                    TextField(
+                      controller: tapoPortController,
+                      enabled: isEditing,
+                      decoration: const InputDecoration(labelText: 'CORS proxy port (default 8090)'),
+                      keyboardType: TextInputType.number,
+                    ),
+                    TextField(
+                      controller: tapoStreamController,
+                      enabled: isEditing,
+                      decoration: const InputDecoration(labelText: 'Front stream name (go2rtc.yaml key)'),
+                    ),
+                    TextField(
+                      controller: tapoCameraIpController,
+                      enabled: isEditing,
+                      decoration: const InputDecoration(labelText: 'Front Camera IP Address'),
+                    ),
+                    TextField(
+                      controller: tapoStreamController2,
+                      enabled: isEditing,
+                      decoration: const InputDecoration(labelText: 'Back stream name (go2rtc.yaml key)'),
+                    ),
+                    TextField(
+                      controller: tapoCamera2IpController,
+                      enabled: isEditing,
+                      decoration: const InputDecoration(labelText: 'Back Camera IP Address'),
+                    ),
+                  ],
+                ),
+              ),
+              actions: isEditing
+                  ? [
+                      TextButton(
+                        onPressed: () {
+                          resetControllers();
+                          setLocalState(() => isEditing = false);
+                        },
+                        child: const Text('Cancel'),
+                      ),
+                      FilledButton(
+                        onPressed: () async {
+                          final nextTapoIp = tapoIpController.text.trim();
+                          final nextTapoPort = tapoPortController.text.trim();
+                          final nextTapoStream = tapoStreamController.text.trim();
+                          final nextTapoStream2 = tapoStreamController2.text.trim();
+                          final nextTapoCameraIp = tapoCameraIpController.text.trim();
+                          final nextTapoCamera2Ip = tapoCamera2IpController.text.trim();
+                          if (nextTapoIp.isEmpty ||
+                              nextTapoPort.isEmpty ||
+                              nextTapoStream.isEmpty ||
+                              nextTapoStream2.isEmpty ||
+                              nextTapoCameraIp.isEmpty ||
+                              nextTapoCamera2Ip.isEmpty ||
+                              !_isValidIpv4(nextTapoIp) ||
+                              !_isValidIpv4(nextTapoCameraIp) ||
+                              !_isValidIpv4(nextTapoCamera2Ip)) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Please fill in the relay details and valid IPv4 addresses.')),
+                            );
+                            return;
+                          }
+
+                          if (!mounted) return;
+                          setState(() {
+                            _tapoRelayIp = nextTapoIp;
+                            _tapoRelayPort = nextTapoPort;
+                            _tapoStreamName = nextTapoStream;
+                            _tapoStreamName2 = nextTapoStream2;
+                            _tapoCameraIp = nextTapoCameraIp;
+                            _tapoCamera2Ip = nextTapoCamera2Ip;
+                          });
+                          await _saveIpConfig();
+
+                          setLocalState(() => isEditing = false);
+                        },
+                        child: const Text('Save'),
+                      ),
+                    ]
+                  : [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Close'),
+                      ),
+                      FilledButton(
+                        onPressed: () => setLocalState(() => isEditing = true),
+                        child: const Text('Edit'),
+                      ),
+                    ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final surface = context.secondarySurface;
     final borderColor = context.canvasBorder;
@@ -476,17 +776,35 @@ class CameraScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Row(
+          children: [
+            Text(
+              'CAMERAS LIVE',
+              style: GoogleFonts.inter(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: accent,
+                letterSpacing: 1.5,
+              ),
+            ),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: _showIpConfigDialog,
+              icon: const Icon(Icons.settings_ethernet, size: 16),
+              label: const Text('Set IP'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
         Text(
-          'ESP32-CAM LIVE',
+          'Cameras via relay: $_tapoRelayIp:$_tapoRelayPort',
           style: GoogleFonts.inter(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: accent,
-            letterSpacing: 1.5,
+            fontSize: 11,
+            color: context.mutedText,
           ),
         ),
         const SizedBox(height: 16),
-        Esp32SensorBar(hostIp: kEsp32HostIp),
+        Esp32SensorBar(hostIp: _hostIp),
         const SizedBox(height: 24),
         Container(
           decoration: BoxDecoration(
@@ -502,100 +820,23 @@ class CameraScreen extends StatelessWidget {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             childAspectRatio: 1.0,
-            children: kEsp32DeviceList.map((device) {
-              return CameraFeedCard(
-                ip: device['ip'] ?? '',
-                label: device['label'] ?? 'Camera',
-              );
-            }).toList(),
+            children: [
+              CameraFeedCard(
+                ip: _tapoRelayIp,
+                label: 'Front Camera',
+                snapshotUrlOverride: _tapoSnapshotUrl,
+                streamUrlOverride: _tapoStreamUrl,
+              ),
+              CameraFeedCard(
+                ip: _tapoRelayIp,
+                label: 'Back Camera',
+                snapshotUrlOverride: _tapoSnapshotUrl2,
+                streamUrlOverride: _tapoStreamUrl2,
+              ),
+            ],
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildNodeCard(
-    BuildContext context,
-    String title,
-    String? imagePath, {
-    bool isActive = false,
-  }) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final surface = context.secondarySurface;
-    final borderColor = context.canvasBorder;
-    final accent = theme.colorScheme.primary;
-    final onSurface = theme.colorScheme.onSurface;
-
-    return Container(
-      height: 120,
-      decoration: BoxDecoration(
-        color: surface,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: isActive ? accent : borderColor,
-          width: isActive ? 2 : 1,
-        ),
-        image: imagePath != null
-            ? DecorationImage(
-                image: AssetImage(imagePath),
-                fit: BoxFit.cover,
-                colorFilter: isActive
-                    ? null
-                    : ColorFilter.mode(
-                        isDark ? Colors.black.withAlpha(128) : Colors.white.withAlpha(46),
-                        BlendMode.darken,
-                      ),
-              )
-            : null,
-      ),
-      child: Stack(
-        children: [
-          if (isActive)
-            Positioned(
-              top: 8,
-              left: 8,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: accent,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  'ACTIVE',
-                  style: GoogleFonts.inter(
-                    color: const Color(0xFF0C100E),
-                    fontSize: 8,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-          Positioned(
-            bottom: 12,
-            left: 12,
-            right: 12,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  title,
-                  style: GoogleFonts.inter(
-                    color: isActive ? onSurface : context.mutedText,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Icon(
-                  Icons.videocam,
-                  color: isActive ? accent : context.mutedText,
-                  size: 14,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -603,8 +844,18 @@ class CameraScreen extends StatelessWidget {
 class CameraFeedCard extends StatefulWidget {
   final String ip;
   final String label;
+  final bool configured;
+  final String? snapshotUrlOverride;
+  final String? streamUrlOverride;
 
-  const CameraFeedCard({super.key, required this.ip, required this.label});
+  const CameraFeedCard({
+    super.key,
+    required this.ip,
+    required this.label,
+    this.configured = true,
+    this.snapshotUrlOverride,
+    this.streamUrlOverride,
+  });
 
   @override
   State<CameraFeedCard> createState() => _CameraFeedCardState();
@@ -616,13 +867,18 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
   bool _connected = false;
   bool _loading = true;
   bool _useSnapshot = false;
+  int _refreshNonce = 0;
 
-  String get _snapshotUrl => 'http://${widget.ip}$kEsp32SnapshotPath';
-  String get _streamUrl => 'http://${widget.ip}$kEsp32StreamPath';
+  String get _snapshotUrl => widget.snapshotUrlOverride ?? 'http://${widget.ip}$kEsp32SnapshotPath';
+  String get _streamUrl => widget.streamUrlOverride ?? 'http://${widget.ip}$kEsp32StreamPath';
 
   @override
   void initState() {
     super.initState();
+    if (!widget.configured) {
+      _loading = false;
+      return;
+    }
     // On web builds the MJPEG stream often doesn't render correctly — use snapshot polling.
     if (kIsWeb) {
       _useSnapshot = true;
@@ -631,9 +887,24 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
   }
 
   void _startSnapshotPolling() {
-    _fetchFrame();
     _timer?.cancel();
+    _fetchFrame();
     _timer = Timer.periodic(const Duration(milliseconds: 600), (_) => _fetchFrame());
+  }
+
+  void _refreshFeed() {
+    if (!widget.configured || !mounted) return;
+
+    setState(() {
+      _frame = null;
+      _connected = false;
+      _loading = true;
+      _refreshNonce++;
+    });
+
+    if (_useSnapshot) {
+      _startSnapshotPolling();
+    }
   }
 
   Future<void> _fetchFrame() async {
@@ -707,15 +978,35 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                Text(
-                  widget.ip,
-                  style: const TextStyle(fontSize: 10, color: Colors.white60),
-                ),
+                if (widget.configured)
+                  Text(
+                    widget.ip,
+                    style: const TextStyle(fontSize: 10, color: Colors.white60),
+                  ),
+                if (widget.configured)
+                  IconButton(
+                    onPressed: _refreshFeed,
+                    tooltip: 'Refresh camera feed',
+                    icon: const Icon(Icons.refresh, size: 17, color: Colors.white),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  ),
               ],
             ),
           ),
           Expanded(
-            child: _useSnapshot
+            child: !widget.configured
+                ? const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.camera_alt_outlined, color: Colors.white54, size: 32),
+                        SizedBox(height: 8),
+                        Text('Not configured', style: TextStyle(fontSize: 12, color: Colors.white70)),
+                      ],
+                    ),
+                  )
+                : _useSnapshot
                 ? (_loading
                     ? const Center(child: CircularProgressIndicator())
                     : (_frame != null
@@ -736,7 +1027,8 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
                             ),
                           )))
                 : Image.network(
-                    '$_streamUrl?cb=${DateTime.now().millisecondsSinceEpoch}',
+                  key: ValueKey('$_streamUrl-$_refreshNonce'),
+                  '$_streamUrl?cb=$_refreshNonce',
                     fit: BoxFit.cover,
                     width: double.infinity,
                     loadingBuilder: (context, child, loadingProgress) {
@@ -777,8 +1069,10 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
 
 class Esp32SensorBar extends StatefulWidget {
   final String hostIp;
+  // When true, shows "Condition: Good/Bad" (admin view) instead of the raw distance reading.
+  final bool showConditionLabel;
 
-  const Esp32SensorBar({super.key, required this.hostIp});
+  const Esp32SensorBar({super.key, required this.hostIp, this.showConditionLabel = false});
 
   @override
   State<Esp32SensorBar> createState() => _Esp32SensorBarState();
@@ -796,6 +1090,7 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
   double? _lastDistanceCm;
   DateTime? _lastAlertCreatedAt;
   Timer? _timer;
+  bool _liveBlink = false;
 
   @override
   void initState() {
@@ -837,6 +1132,7 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
           _motionSensorEnabled = motionEnabled;
           _pushAlertsEnabled = pushEnabled;
           _lastDistanceCm = dist.toDouble();
+          _liveBlink = !_liveBlink;
         });
 
         if (isMotion) {
@@ -860,6 +1156,7 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
         _motionDetected = false;
         _motionSensorEnabled = motionEnabled;
         _pushAlertsEnabled = pushEnabled;
+        _liveBlink = false;
       });
     }
   }
@@ -930,15 +1227,15 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
   Widget build(BuildContext context) {
     final isConnected = _status == 'Connected';
     final motionLabel = !_motionSensorEnabled
-        ? 'Sensor OFF'
-        : (_motionDetected ? 'MOVEMENT DETECTED' : 'No motion');
+        ? 'Movement: Sensor OFF'
+        : (_motionDetected ? 'Movement: Detected Movement' : 'Movement: None');
     final motionColor = _motionDetected ? Colors.orangeAccent : Colors.white70;
 
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: isConnected ? Colors.blue.shade900 : Colors.red.shade900,
+        color: Colors.blue.shade900,
         borderRadius: BorderRadius.circular(24),
       ),
       child: Row(
@@ -949,12 +1246,47 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Ultrasonic Sensor (Host)',
-                  style: TextStyle(fontSize: 11, color: Colors.white70),
+                Row(
+                  children: [
+                    const Text(
+                      'Motion Detector',
+                      style: TextStyle(fontSize: 11, color: Colors.white70),
+                    ),
+                    if (isConnected) ...[
+                      const SizedBox(width: 6),
+                      AnimatedOpacity(
+                        opacity: _liveBlink ? 1.0 : 0.25,
+                        duration: const Duration(milliseconds: 400),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                color: Colors.greenAccent,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            const Text(
+                              'LIVE',
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.greenAccent,
+                                letterSpacing: 1.0,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 Text(
-                  'Distance: $_distance',
+                  widget.showConditionLabel
+                      ? 'Condition: ${isConnected ? 'Good' : 'Bad'}'
+                      : 'Distance: $_distance',
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
