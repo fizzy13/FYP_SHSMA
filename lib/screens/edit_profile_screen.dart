@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/user_model.dart';
+import '../models/country_options.dart';
 import '../services/user_info_service.dart';
 import '../auth_service.dart';
 import '../theme_helpers.dart';
@@ -19,6 +20,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late TextEditingController _emailController;
   late TextEditingController _phoneController;
   late TextEditingController _addressController;
+  String? _country;
   
   final UserInfoService _userInfoService = UserInfoService();
   bool _isLoading = false;
@@ -31,6 +33,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _emailController = TextEditingController(text: widget.userInfo?.email ?? '');
     _phoneController = TextEditingController(text: widget.userInfo?.phoneNumber ?? '');
     _addressController = TextEditingController(text: widget.userInfo?.address ?? '');
+    _country = widget.userInfo?.country.isNotEmpty == true ? widget.userInfo!.country : null;
   }
 
   @override
@@ -47,7 +50,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     if (_fullNameController.text.isEmpty ||
         _emailController.text.isEmpty ||
         _phoneController.text.isEmpty ||
-        _addressController.text.isEmpty) {
+        _addressController.text.isEmpty || _country == null) {
       setState(() {
         _errorMessage = 'Please fill in all fields';
       });
@@ -71,6 +74,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         email: _emailController.text.trim(),
         phoneNumber: _phoneController.text.trim(),
         address: _addressController.text.trim(),
+        country: _country!,
         fullName: _fullNameController.text.trim(),
         createdAt: widget.userInfo?.createdAt ?? DateTime.now(),
         updatedAt: DateTime.now(),
@@ -113,6 +117,30 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         });
       }
     }
+  }
+
+  Widget _buildCountrySelector() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('COUNTRY', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.primary, letterSpacing: 1.5)),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(color: context.tertiarySurface, borderRadius: BorderRadius.circular(16), border: Border.all(color: isDark ? Colors.white10 : Colors.black12)),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _country,
+              isExpanded: true,
+              hint: Text('Select country', style: GoogleFonts.inter(color: context.mutedText)),
+              items: kCountryOptions.map((country) => DropdownMenuItem(value: country, child: Text(country, style: GoogleFonts.inter(color: context.headingText)))).toList(),
+              onChanged: _isLoading ? null : (country) => setState(() => _country = country),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildTextField(
@@ -260,6 +288,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               maxLines: 3,
               hint: 'Enter your home address',
             ),
+            const SizedBox(height: 24),
+            _buildCountrySelector(),
             const SizedBox(height: 40),
 
             // Save Button

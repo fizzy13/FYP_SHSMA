@@ -5,7 +5,9 @@ class UserInfo {
   final String email;
   final String phoneNumber;
   final String address;
+  final String country;
   final String fullName;
+  final String role;
   final DateTime createdAt;
   final DateTime? updatedAt;
   final bool twoFactorEnabled;
@@ -16,7 +18,9 @@ class UserInfo {
     required this.email,
     required this.phoneNumber,
     required this.address,
+    this.country = '',
     required this.fullName,
+    this.role = 'Home Owner',
     required this.createdAt,
     this.updatedAt,
     this.twoFactorEnabled = false,
@@ -30,7 +34,9 @@ class UserInfo {
       'email': email,
       'phoneNumber': phoneNumber,
       'address': address,
+      'country': country,
       'fullName': fullName,
+      'role': role,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt?.toIso8601String() ?? DateTime.now().toIso8601String(),
       'twoFactorEnabled': twoFactorEnabled,
@@ -56,13 +62,16 @@ class UserInfo {
     final resolvedFullName = (map['fullName'] ?? map['name'] ?? map['Name'] ?? '').toString();
     final resolvedPhoneNumber = (map['phoneNumber'] ?? map['phone'] ?? map['Phone'] ?? '').toString();
     final resolvedAddress = (map['address'] ?? map['Address'] ?? '').toString();
+    final resolvedCountry = (map['country'] ?? map['Country'] ?? '').toString();
 
     return UserInfo(
       uid: map['uid'],
       email: map['email'] ?? '',
       phoneNumber: resolvedPhoneNumber,
       address: resolvedAddress,
+      country: resolvedCountry,
       fullName: resolvedFullName,
+      role: (map['role'] ?? 'Home Owner').toString(),
       createdAt: parseDate(map['createdAt']),
       updatedAt: map['updatedAt'] != null ? parseDate(map['updatedAt']) : null,
       twoFactorEnabled: map['twoFactorEnabled'] ?? false,
@@ -76,7 +85,9 @@ class UserInfo {
     String? email,
     String? phoneNumber,
     String? address,
+    String? country,
     String? fullName,
+    String? role,
     DateTime? createdAt,
     DateTime? updatedAt,
     bool? twoFactorEnabled,
@@ -87,7 +98,9 @@ class UserInfo {
       email: email ?? this.email,
       phoneNumber: phoneNumber ?? this.phoneNumber,
       address: address ?? this.address,
+      country: country ?? this.country,
       fullName: fullName ?? this.fullName,
+      role: role ?? this.role,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? DateTime.now(),
       twoFactorEnabled: twoFactorEnabled ?? this.twoFactorEnabled,

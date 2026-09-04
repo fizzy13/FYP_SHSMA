@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../auth_service.dart';
+import '../models/country_options.dart';
 import '../theme_helpers.dart';
 import 'welcome_screen.dart';
 
@@ -19,7 +20,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
   final AuthService _authService = AuthService();
+  String? _country;
   bool _isLoading = false;
+  bool _isPasswordVisible = false;
+  bool _isConfirmPasswordVisible = false;
 
   @override
   void dispose() {
@@ -48,7 +52,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final password = _passwordController.text;
     final confirmPassword = _confirmPasswordController.text;
 
-    if (fullName.isEmpty || rawEmail.isEmpty || phone.isEmpty || address.isEmpty || password.isEmpty || confirmPassword.isEmpty) {
+    if (fullName.isEmpty || rawEmail.isEmpty || phone.isEmpty || address.isEmpty || _country == null || password.isEmpty || confirmPassword.isEmpty) {
       _showSnack('Please fill in all fields.');
       return;
     }
@@ -64,7 +68,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     final email = _normalizeEmail(rawEmail);
     try {
-      final user = await _authService.register(email, password, fullName, phone, address);
+      final user = await _authService.register(email, password, fullName, phone, address, _country!);
       if (user != null) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -95,6 +99,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
+  Widget _buildCountrySelector(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('COUNTRY', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w700, color: theme.colorScheme.primary, letterSpacing: 1.2)),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          decoration: BoxDecoration(color: context.secondarySurface, borderRadius: BorderRadius.circular(28), border: Border.all(color: context.canvasBorder)),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _country,
+              isExpanded: true,
+              hint: Text('Select country', style: GoogleFonts.inter(color: context.mutedText)),
+              items: kCountryOptions.map((country) => DropdownMenuItem(value: country, child: Text(country, style: GoogleFonts.inter(color: theme.colorScheme.onSurface)))).toList(),
+              onChanged: (country) => setState(() => _country = country),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   void _showSnack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -110,6 +138,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     IconData icon,
     TextEditingController controller, {
     bool obscureText = false,
+    VoidCallback? onVisibilityToggle,
     TextInputType keyboardType = TextInputType.text,
     int maxLines = 1,
   }) {
@@ -143,6 +172,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
             style: GoogleFonts.inter(color: theme.colorScheme.onSurface),
             decoration: InputDecoration(
               icon: Icon(icon, color: isDark ? Colors.white54 : Colors.black45, size: 20),
+              suffixIcon: onVisibilityToggle == null
+                  ? null
+                  : IconButton(
+                      tooltip: obscureText ? 'Show password' : 'Hide password',
+                      onPressed: onVisibilityToggle,
+                      icon: Icon(
+                        obscureText ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                        color: isDark ? Colors.white54 : Colors.black45,
+                      ),
+                    ),
               hintText: 'Enter $label'.toLowerCase(),
               hintStyle: GoogleFonts.inter(color: context.mutedText),
               border: InputBorder.none,
@@ -205,9 +244,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 16),
               _buildTextField(context, 'Address', Icons.location_on_outlined, _addressController, maxLines: 2),
               const SizedBox(height: 16),
-              _buildTextField(context, 'Password', Icons.lock_outline, _passwordController, obscureText: true),
+              _buildCountrySelector(context),
               const SizedBox(height: 16),
-              _buildTextField(context, 'Re-type Password', Icons.lock_outline, _confirmPasswordController, obscureText: true),
+              _buildTextField(
+                context,
+                'Password',
+                Icons.lock_outline,
+                _passwordController,
+                obscureText: !_isPasswordVisible,
+                onVisibilityToggle: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+              ),
+              const SizedBox(height: 16),
+              _buildTextField(
+                context,
+                'Re-type Password',
+                Icons.lock_outline,
+                _confirmPasswordController,
+                obscureText: !_isConfirmPasswordVisible,
+                onVisibilityToggle: () => setState(() => _isConfirmPasswordVisible = !_isConfirmPasswordVisible),
+              ),
               const SizedBox(height: 32),
               SizedBox(
                 width: double.infinity,

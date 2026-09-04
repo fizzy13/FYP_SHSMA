@@ -1,0 +1,17 @@
+const List<String> kCountryOptions = [
+  'Malaysia',
+  'Singapore',
+  'Indonesia',
+  'Thailand',
+  'Brunei',
+  'Philippines',
+  'Vietnam',
+  'China',
+  'India',
+  'Japan',
+  'South Korea',
+  'Australia',
+  'United Kingdom',
+  'United States',
+  'Other',
+];

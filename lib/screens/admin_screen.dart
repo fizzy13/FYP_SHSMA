@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' hide UserInfo;
@@ -35,8 +36,7 @@ class _AdminScreenState extends State<AdminScreen> {
 
   // Switches state
   bool _humanDetection = true;
-  bool _faceRecognition = true;
-  bool _petFiltering = false;
+  bool _animalDetection = true;
 
   // Live-polled camera reachability, mirrors the user dashboard status tiles.
   bool _frontCameraOnline = false;
@@ -71,6 +71,7 @@ class _AdminScreenState extends State<AdminScreen> {
         )
         .snapshots();
     _loadCameraConfigAndPoll();
+    _loadManagedDetectionOptions();
   }
 
   @override
@@ -99,9 +100,10 @@ class _AdminScreenState extends State<AdminScreen> {
 
   Future<bool> _isCameraReachable(String streamName) async {
     try {
-      final uri = Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$streamName');
-      final response = await http.get(uri).timeout(const Duration(seconds: 2));
-      return response.statusCode == 200;
+      final uri = Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort/health?src=$streamName');
+      final response = await http.get(uri).timeout(const Duration(seconds: 5));
+      if (response.statusCode != 200) return false;
+      return (jsonDecode(response.body) as Map<String, dynamic>)['online'] == true;
     } catch (_) {
       return false;
     }
@@ -115,6 +117,130 @@ class _AdminScreenState extends State<AdminScreen> {
       _frontCameraOnline = front;
       _backCameraOnline = back;
     });
+  }
+
+  Future<void> _loadManagedDetectionOptions() async {
+    final settings = await _firestore.collection('ai_detection_settings').doc('current').get();
+    if (!mounted || !settings.exists) return;
+    final data = settings.data()!;
+    setState(() {
+      _humanDetection = data['humanDetectionEnabled'] as bool? ?? true;
+      _animalDetection = data['animalDetectionEnabled'] as bool? ?? true;
+    });
+  }
+
+  Future<void> _updateManagedDetectionOptions({bool? human, bool? animal}) async {
+    final nextHuman = human ?? _humanDetection;
+    final nextAnimal = animal ?? _animalDetection;
+    setState(() {
+      _humanDetection = nextHuman;
+      _animalDetection = nextAnimal;
+    });
+    try {
+      await _authService.setManagedDetectionOptions(
+        humanDetectionEnabled: nextHuman,
+        animalDetectionEnabled: nextAnimal,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _humanDetection = !nextHuman;
+        _animalDetection = !nextAnimal;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to update AI detection settings.')),
+      );
+    }
+  }
+
+  Future<void> _showAddMemberDialog() async {
+    final usernameController = TextEditingController();
+    final passwordController = TextEditingController();
+    var passwordVisible = false;
+    var submitting = false;
+    var dialogOpen = true;
+    String? errorMessage;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Add Administrator', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: usernameController,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Username'),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: passwordController,
+                obscureText: !passwordVisible,
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  suffixIcon: IconButton(
+                    tooltip: passwordVisible ? 'Hide password' : 'Show password',
+                    onPressed: () => setDialogState(() => passwordVisible = !passwordVisible),
+                    icon: Icon(passwordVisible ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  ),
+                ),
+              ),
+              if (errorMessage != null) ...[
+                const SizedBox(height: 12),
+                Text(errorMessage!, style: const TextStyle(color: Colors.redAccent)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: submitting
+                  ? null
+                  : () {
+                      dialogOpen = false;
+                      Navigator.pop(dialogContext);
+                    },
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      final username = usernameController.text.trim();
+                      final password = passwordController.text;
+                      if (username.isEmpty || password.length < 6) {
+                        setDialogState(() => errorMessage = 'Enter a username and a password of at least 6 characters.');
+                        return;
+                      }
+                      setDialogState(() {
+                        submitting = true;
+                        errorMessage = null;
+                      });
+                      try {
+                        await _authService.createAdministrator(username: username, password: password);
+                        if (dialogContext.mounted) {
+                          dialogOpen = false;
+                          Navigator.pop(dialogContext);
+                        }
+                      } on FirebaseAuthException catch (error) {
+                        setDialogState(() => errorMessage = error.message ?? 'Unable to create administrator.');
+                      } catch (_) {
+                        setDialogState(() => errorMessage = 'Unable to create administrator.');
+                      } finally {
+                        if (dialogOpen && dialogContext.mounted) {
+                          setDialogState(() => submitting = false);
+                        }
+                      }
+                    },
+              child: Text(submitting ? 'Creating...' : 'Add Member'),
+            ),
+          ],
+        ),
+      ),
+    );
+    usernameController.dispose();
+    passwordController.dispose();
   }
 
   @override
@@ -1025,44 +1151,119 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildRegionalDistributionCard() {
-    return _buildCardContainer(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _usersStream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _buildCardContainer(
+            child: Text(
+              'Unable to load regional distribution right now.',
+              style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+            ),
+          );
+        }
+
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final regions = _computeRegionalDistribution(snapshot.data!.docs);
+        return _buildCardContainer(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Regional Distribution',
-                style: GoogleFonts.outfit(
-                  color: const Color(0xFF4EEF9B),
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Regional Distribution',
+                    style: GoogleFonts.outfit(
+                      color: const Color(0xFF4EEF9B),
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    '${_formatCount(regions.totalUsers)} USERS',
+                    style: GoogleFonts.inter(
+                      color: const Color(0xFF4EEF9B),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                ],
               ),
-              Text(
-                'VIEW MAP',
-                style: GoogleFonts.inter(
-                  color: const Color(0xFF4EEF9B),
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.0,
-                ),
-              ),
+              const SizedBox(height: 24),
+              if (regions.items.isEmpty)
+                Text(
+                  'No users have selected a country yet.',
+                  style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+                )
+              else
+                ...regions.items.expand(
+                  (region) => [
+                    _buildRegionItem(region),
+                    const SizedBox(height: 16),
+                  ],
+                ).toList()
+                  ..removeLast(),
             ],
           ),
-          const SizedBox(height: 24),
-          _buildRegionItem('North America', 62),
-          const SizedBox(height: 16),
-          _buildRegionItem('European Union', 31),
-          const SizedBox(height: 16),
-          _buildRegionItem('Asia Pacific', 18),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildRegionItem(String region, int percentage) {
+  _RegionalDistribution _computeRegionalDistribution(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> users,
+  ) {
+    final counts = <String, int>{};
+    var totalUsers = 0;
+    for (final user in users) {
+      final country = (user.data()['country'] ?? '').toString().trim();
+      if (country.isEmpty) continue;
+      final region = _regionForCountry(country);
+      counts[region] = (counts[region] ?? 0) + 1;
+      totalUsers++;
+    }
+
+    final items = counts.entries
+        .map((entry) => _RegionalDistributionItem(
+              region: entry.key,
+              userCount: entry.value,
+              percentage: totalUsers == 0 ? 0 : (entry.value / totalUsers) * 100,
+            ))
+        .toList()
+      ..sort((left, right) => right.userCount.compareTo(left.userCount));
+    return _RegionalDistribution(totalUsers: totalUsers, items: items);
+  }
+
+  String _regionForCountry(String country) {
+    switch (country) {
+      case 'Malaysia':
+      case 'Singapore':
+      case 'Indonesia':
+      case 'Thailand':
+      case 'Brunei':
+      case 'Philippines':
+      case 'Vietnam':
+      case 'China':
+      case 'India':
+      case 'Japan':
+      case 'South Korea':
+      case 'Australia':
+        return 'Asia Pacific';
+      case 'United Kingdom':
+        return 'Europe';
+      case 'United States':
+        return 'North America';
+      default:
+        return 'Other';
+    }
+  }
+
+  Widget _buildRegionItem(_RegionalDistributionItem item) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1083,7 +1284,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  region,
+                  item.region,
                   style: GoogleFonts.inter(
                     color: _primaryTextColor,
                     fontSize: 14,
@@ -1093,7 +1294,7 @@ class _AdminScreenState extends State<AdminScreen> {
               ],
             ),
             Text(
-              '$percentage%',
+              '${_formatCount(item.userCount)} (${item.percentage.round()}%)',
               style: GoogleFonts.inter(
                 color: _secondaryTextColor,
                 fontSize: 12,
@@ -1105,7 +1306,7 @@ class _AdminScreenState extends State<AdminScreen> {
         ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: LinearProgressIndicator(
-            value: percentage / 100,
+            value: item.percentage / 100,
             minHeight: 6,
             backgroundColor: context.canvasBorder,
             valueColor: const AlwaysStoppedAnimation<Color>(
@@ -1588,48 +1789,50 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildManageUsersCard() {
-    return StreamBuilder<UserInfo?>(
-      stream: _adminInfoStream(),
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _usersStream,
       builder: (context, snapshot) {
-        final adminName = _resolveAdminName(snapshot.data);
-
+        final currentAdmin = _authService.currentUser;
+        final currentAdminId = currentAdmin?.uid;
+        final members = snapshot.data?.docs
+                .where(
+                  (doc) =>
+                      doc.data()['role'] == 'Administrator' &&
+                      doc.id != currentAdminId,
+                )
+                .toList() ??
+            const [];
         return _buildCardContainer(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildSectionHeader(
                 'Manage Users',
-                trailing: Row(
-                  children: [
-                    Icon(Icons.person_add, color: _secondaryTextColor, size: 16),
-                    const SizedBox(width: 4),
-                    Text(
-                      'ADD MEMBER',
-                      style: GoogleFonts.inter(
-                        color: _secondaryTextColor,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
+                trailing: TextButton.icon(
+                  onPressed: _showAddMemberDialog,
+                  icon: Icon(Icons.person_add, color: _secondaryTextColor, size: 16),
+                  label: Text('ADD MEMBER', style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12, fontWeight: FontWeight.w600)),
                 ),
               ),
               const SizedBox(height: 24),
               _buildUserRow(
-                name: adminName,
+                name: _displayNameFromUser(currentAdmin),
                 role: 'Administrator',
                 status: 'ACTIVE',
                 avatarUrl: 'https://i.pravatar.cc/150?img=47',
                 statusColor: const Color(0xFF00E676),
               ),
-              const SizedBox(height: 16),
-              _buildUserRow(
-                name: 'Marcus Chen',
-                role: 'Family Member',
-                status: 'LIMITED',
-                avatarUrl: 'https://i.pravatar.cc/150?img=11',
-                statusColor: Colors.white54,
-              ),
+              if (members.isNotEmpty) const SizedBox(height: 16),
+              ...members.map((member) => Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: _buildUserRow(
+                        name: (member.data()['fullName'] ?? member.data()['email'] ?? 'Administrator').toString(),
+                        role: 'Administrator',
+                        status: (member.data()['accountStatus'] ?? 'ACTIVE').toString(),
+                        avatarUrl: 'https://i.pravatar.cc/150?img=47',
+                        statusColor: const Color(0xFF00E676),
+                      ),
+                    )),
             ],
           ),
         );
@@ -1702,27 +1905,20 @@ class _AdminScreenState extends State<AdminScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildSectionHeader('AI Detection'),
+          _buildSectionHeader('Manage AI Detection'),
           const SizedBox(height: 24),
           _buildSwitchRow(
             title: 'Human Detection',
             subtitle: 'Neural motion filtering',
             value: _humanDetection,
-            onChanged: (val) => setState(() => _humanDetection = val),
+            onChanged: (val) => _updateManagedDetectionOptions(human: val),
           ),
           const SizedBox(height: 20),
           _buildSwitchRow(
-            title: 'Face Recognition',
-            subtitle: 'Identify known profiles',
-            value: _faceRecognition,
-            onChanged: (val) => setState(() => _faceRecognition = val),
-          ),
-          const SizedBox(height: 20),
-          _buildSwitchRow(
-            title: 'Pet Filtering',
-            subtitle: 'Ignore animal activity',
-            value: _petFiltering,
-            onChanged: (val) => setState(() => _petFiltering = val),
+            title: 'Animal Detection',
+            subtitle: 'Detect cats, dogs, and birds',
+            value: _animalDetection,
+            onChanged: (val) => _updateManagedDetectionOptions(animal: val),
           ),
         ],
       ),
@@ -2141,4 +2337,26 @@ class _ActivityTrendPoint {
   final String dayLabel;
   final int activeUsers;
   final int inactiveUsers;
+}
+
+class _RegionalDistribution {
+  const _RegionalDistribution({
+    required this.totalUsers,
+    required this.items,
+  });
+
+  final int totalUsers;
+  final List<_RegionalDistributionItem> items;
+}
+
+class _RegionalDistributionItem {
+  const _RegionalDistributionItem({
+    required this.region,
+    required this.userCount,
+    required this.percentage,
+  });
+
+  final String region;
+  final int userCount;
+  final double percentage;
 }

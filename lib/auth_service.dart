@@ -1,19 +1,26 @@
 import 'dart:convert';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart' hide UserInfo;
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'models/user_model.dart';
+import 'firebase_options.dart';
 import 'services/credential_storage.dart';
 import 'services/user_info_service.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final UserInfoService _userInfoService = UserInfoService();
   final LocalAuthentication _localAuth = LocalAuthentication();
   final CredentialStorage _credentialStorage = CredentialStorage();
   static const String _biometricEnabledKey = 'biometric_enabled';
+  static const String _motionAlertsKey = 'pref_motion_alerts_enabled';
+  static const String _aiDetectionKey = 'pref_ai_detection_enabled';
 
   /// Get current authenticated user
   User? get currentUser => _auth.currentUser;
@@ -23,7 +30,114 @@ class AuthService {
       email: email,
       password: password,
     );
-    return userCredential.user;
+    final user = userCredential.user;
+    if (user != null) {
+      await _setActiveCameraOwner(user);
+    }
+    return user;
+  }
+
+  Future<void> _setActiveCameraOwner(User user) async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final motionAlertsEnabled = preferences.getBool(_motionAlertsKey) ?? true;
+      final aiDetectionEnabled = preferences.getBool(_aiDetectionKey) ?? true;
+      await _firestore.collection('Users').doc(user.uid).set({
+        'aiDetectorOwner': true,
+        'motionAlertsEnabled': motionAlertsEnabled,
+        'aiDetectionEnabled': aiDetectionEnabled,
+        'aiDetectorUpdatedAt': FieldValue.serverTimestamp(),
+        'email': user.email,
+        'uid': user.uid,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (error) {
+      debugPrint('Could not set AI camera owner: $error');
+    }
+  }
+
+  Future<void> setMotionAlertsEnabled(bool enabled) async {
+    final user = currentUser;
+    if (user == null) return;
+
+    try {
+      await _firestore.collection('Users').doc(user.uid).set({
+        'aiDetectorOwner': true,
+        'motionAlertsEnabled': enabled,
+        'aiDetectorUpdatedAt': FieldValue.serverTimestamp(),
+        'email': user.email,
+        'uid': user.uid,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (error) {
+      debugPrint('Could not update Motion Alerts preference: $error');
+    }
+  }
+
+  Future<void> setAiDetectionEnabled(bool enabled) async {
+    final user = currentUser;
+    if (user == null) return;
+
+    try {
+      await _firestore.collection('Users').doc(user.uid).set({
+        'aiDetectorOwner': true,
+        'aiDetectionEnabled': enabled,
+        'aiDetectorUpdatedAt': FieldValue.serverTimestamp(),
+        'email': user.email,
+        'uid': user.uid,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (error) {
+      debugPrint('Could not update AI Detection preference: $error');
+    }
+  }
+
+  Future<void> setManagedDetectionOptions({
+    required bool humanDetectionEnabled,
+    required bool animalDetectionEnabled,
+  }) async {
+    await _firestore.collection('ai_detection_settings').doc('current').set({
+      'humanDetectionEnabled': humanDetectionEnabled,
+      'animalDetectionEnabled': animalDetectionEnabled,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'updatedBy': currentUser?.uid,
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> createAdministrator({
+    required String username,
+    required String password,
+  }) async {
+    final email = username.contains('@') ? username.trim() : '${username.trim()}@shsma-web.firebaseapp.com';
+    FirebaseApp? secondaryApp;
+    try {
+      secondaryApp = await Firebase.initializeApp(
+        name: 'admin-member-${DateTime.now().microsecondsSinceEpoch}',
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      final secondaryAuth = FirebaseAuth.instanceFor(app: secondaryApp);
+      final credential = await secondaryAuth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+      final member = credential.user;
+      if (member == null) {
+        throw StateError('Firebase did not create the administrator account.');
+      }
+      await member.updateDisplayName(username.trim());
+      await _firestore.collection('Users').doc(member.uid).set({
+        'uid': member.uid,
+        'email': email,
+        'fullName': username.trim(),
+        'role': 'Administrator',
+        'accountStatus': 'ACTIVE',
+        'createdAt': DateTime.now().toIso8601String(),
+        'updatedAt': DateTime.now().toIso8601String(),
+      }, SetOptions(merge: true));
+      await secondaryAuth.signOut();
+    } finally {
+      await secondaryApp?.delete();
+    }
   }
 
   Future<User?> loginWithBiometrics() async {
@@ -98,6 +212,7 @@ class AuthService {
     String fullName,
     String phoneNumber,
     String address,
+    String country,
   ) async {
     try {
       UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
@@ -113,10 +228,12 @@ class AuthService {
           email: email,
           phoneNumber: phoneNumber,
           address: address,
+          country: country,
           fullName: fullName,
           createdAt: DateTime.now(),
         );
         await _userInfoService.saveUserInfo(userInfo);
+        await _setActiveCameraOwner(userCredential.user!);
       }
 
       return userCredential.user;

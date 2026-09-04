@@ -21,6 +21,7 @@ class AlertsScreen extends StatefulWidget {
 
 class _AlertsScreenState extends State<AlertsScreen> {
   String? _lastShownAlertId;
+  bool _receivedInitialAlerts = false;
 
   Future<void> _confirmAndCallPolice() async {
     final confirmed = await showDialog<bool>(
@@ -375,7 +376,32 @@ class _AlertsScreenState extends State<AlertsScreen> {
                   final alertStatus = latest['status'] as String? ?? 'ACTIVE';
                   final alertTime = _formatTimestamp(latest['timestamp']);
 
-                  if (alertStatus.toUpperCase() == 'LIVE' &&
+                  QueryDocumentSnapshot<Map<String, dynamic>>? latestAiDoc;
+                  for (final doc in docs) {
+                    final data = doc.data();
+                    final img = data['imageUrl'] as String?;
+                    final cls = data['detectedClass'] as String?;
+                    if (img != null &&
+                        img.isNotEmpty &&
+                        cls != null &&
+                        cls.isNotEmpty) {
+                      latestAiDoc = doc;
+                      break;
+                    }
+                  }
+
+                  final aiSnapshotData = latestAiDoc?.data();
+                  final aiImageUrl = aiSnapshotData?['imageUrl'] as String?;
+                  final aiLocation =
+                      aiSnapshotData?['location'] as String? ?? alertLocation;
+                  final aiTime = latestAiDoc != null
+                      ? _formatTimestamp(aiSnapshotData?['timestamp'])
+                      : alertTime;
+                  final hasAiSnapshot =
+                      aiImageUrl != null && aiImageUrl.isNotEmpty;
+
+                  if (_receivedInitialAlerts &&
+                      alertStatus.toUpperCase() == 'LIVE' &&
                       _lastShownAlertId != latestDoc.id) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (!mounted) return;
@@ -387,7 +413,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                           return AlertDialog(
                             backgroundColor: surface,
                             title: Text(
-                              'Motion Detected',
+                              alertType,
                               style: GoogleFonts.outfit(
                                 fontWeight: FontWeight.bold,
                               ),
@@ -410,6 +436,8 @@ class _AlertsScreenState extends State<AlertsScreen> {
                       );
                     });
                   }
+
+                  _receivedInitialAlerts = true;
 
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -474,51 +502,39 @@ class _AlertsScreenState extends State<AlertsScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Container(
-                              height: 180,
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
+                            if (hasAiSnapshot) ...[
+                              ClipRRect(
                                 borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Stack(
-                                children: [
-                                  Positioned(
-                                    top: 12,
-                                    left: 12,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 4,
+                                child: AspectRatio(
+                                  aspectRatio: 16 / 9,
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      Image.network(
+                                        aiImageUrl,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (context, error, stackTrace) => const ColoredBox(color: Colors.black54),
                                       ),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFFF6B6B),
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      child: Text(
-                                        'LIVE FEED',
-                                        style: GoogleFonts.inter(
-                                          color: Colors.white,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.bold,
+                                      Positioned(
+                                        top: 12,
+                                        left: 12,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                          decoration: BoxDecoration(color: const Color(0xFFFF6B6B), borderRadius: BorderRadius.circular(12)),
+                                          child: Text('AI SNAPSHOT', style: GoogleFonts.inter(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
                                         ),
                                       ),
-                                    ),
-                                  ),
-                                  Positioned(
-                                    bottom: 12,
-                                    right: 12,
-                                    child: Text(
-                                      '$alertLocation • $alertTime',
-                                      style: GoogleFonts.inter(
-                                        color: Colors.white,
-                                        fontSize: 10,
+                                      Positioned(
+                                        bottom: 12,
+                                        right: 12,
+                                        child: Text('$aiLocation • $aiTime', style: GoogleFonts.inter(color: Colors.white, fontSize: 10)),
                                       ),
-                                    ),
+                                    ],
                                   ),
-                                ],
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 20),
+                              const SizedBox(height: 20),
+                            ],
                             Row(
                               children: [
                                 const Icon(
@@ -678,6 +694,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                               final time = _formatTimestamp(data['timestamp']);
                               final status =
                                   data['status'] as String? ?? 'LIVE';
+                                final itemImageUrl = data['imageUrl'] as String?;
 
                               return _buildEventCard(
                                 context,
@@ -686,7 +703,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                                 time,
                                 status,
                                 message,
-                                null,
+                                itemImageUrl,
                                 labelColor: const Color(0xFFFF6B6B),
                                 onDelete: () => _deleteAlert(docId),
                               );
@@ -739,9 +756,9 @@ class _AlertsScreenState extends State<AlertsScreen> {
             decoration: BoxDecoration(
               color: const Color(0xFF1D221F),
               borderRadius: BorderRadius.circular(16),
-              image: imagePath != null
+                image: imagePath != null
                   ? DecorationImage(
-                      image: AssetImage(imagePath),
+                image: NetworkImage(imagePath),
                       fit: BoxFit.cover,
                     )
                   : null,

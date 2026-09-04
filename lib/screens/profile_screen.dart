@@ -20,7 +20,7 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _biometricEnabled = true;
   bool _twoFactorEnabled = false;
-  bool _pushAlertsEnabled = true;
+  bool _aiDetectionEnabled = true;
   bool _motionAlertsEnabled = true;
   bool _systemUpdatesEnabled = true;
   bool _darkModeEnabled = true;
@@ -56,25 +56,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _loadNotificationPreferences() async {
-    final pushEnabled = await _notificationPreferencesService.getPushAlertsEnabled();
+    final aiDetectionEnabled = await _notificationPreferencesService.getAiDetectionEnabled();
     final motionEnabled = await _notificationPreferencesService.getMotionAlertsEnabled();
     if (!mounted) return;
     setState(() {
-      _pushAlertsEnabled = pushEnabled;
+      _aiDetectionEnabled = aiDetectionEnabled;
       _motionAlertsEnabled = motionEnabled;
     });
   }
 
-  Future<void> _onTogglePushAlerts(bool value) async {
-    await _notificationPreferencesService.setPushAlertsEnabled(value);
+  Future<void> _onToggleAiDetection(bool value) async {
+    await _notificationPreferencesService.setAiDetectionEnabled(value);
+    await _authService.setAiDetectionEnabled(value);
     if (!mounted) return;
     setState(() {
-      _pushAlertsEnabled = value;
+      _aiDetectionEnabled = value;
     });
   }
 
   Future<void> _onToggleMotionAlerts(bool value) async {
     await _notificationPreferencesService.setMotionAlertsEnabled(value);
+    await _authService.setMotionAlertsEnabled(value);
     if (!mounted) return;
     setState(() {
       _motionAlertsEnabled = value;
@@ -493,6 +495,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 'HOME ADDRESS',
                 _userInfo?.address ?? 'Not set',
               ),
+              const SizedBox(height: 12),
+              _buildInfoCard(
+                context,
+                Icons.public_outlined,
+                'COUNTRY',
+                _userInfo?.country.isNotEmpty == true ? _userInfo!.country : 'Not set',
+              ),
               const SizedBox(height: 40),
 
               // SECURITY SETTINGS
@@ -540,7 +549,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const SizedBox(height: 40),
               // NOTIFICATION PREFERENCES
               _buildSectionHeader(context, 'NOTIFICATION PREFERENCES'),
-              _buildNotificationToggle(context, 'Push Alerts (High Priority)', _pushAlertsEnabled, _onTogglePushAlerts),
+              _buildNotificationToggle(context, 'AI Detection', _aiDetectionEnabled, _onToggleAiDetection),
               const SizedBox(height: 12),
               _buildNotificationToggle(context, 'Motion Alerts', _motionAlertsEnabled, _onToggleMotionAlerts),
               const SizedBox(height: 12),

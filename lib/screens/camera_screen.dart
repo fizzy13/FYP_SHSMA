@@ -16,6 +16,7 @@ import '../models/user_model.dart';
 import '../services/notification_preferences_service.dart';
 import '../services/security_event_service.dart';
 import '../theme_helpers.dart';
+import '../widgets/go2rtc_live_view.dart';
 import 'welcome_screen.dart';
 
 const bool kUseEsp32CameraFeeds = true;
@@ -52,10 +53,11 @@ const String kTapoDefaultRelayIp = String.fromEnvironment('TAPO_RELAY_IP', defau
 const String kTapoCameraIp = '192.168.1.17';
 const String kTapoCamera2Ip = '192.168.1.18';
 const String kTapoDefaultRelayPort = '8090';
+const String kGo2rtcApiPort = '1984';
 const String kTapoDefaultStreamName = 'tapo1';
 const String kTapoDefaultStreamName2 = 'tapo2';
 const String kGo2rtcSnapshotPath = '/api/frame.jpeg';
-const String kGo2rtcStreamPath = '/api/stream.mjpeg';
+const String kGo2rtcStreamPath = '/webrtc.html';
 // go2rtc transcodes the RTSP audio track to MP3 on the fly (requires ffmpeg, already configured).
 const String kGo2rtcAudioPath = '/api/stream.mp3';
 
@@ -580,11 +582,11 @@ class _Esp32CameraSectionState extends State<Esp32CameraSection> {
   String _tapoCamera2Ip = kTapoCamera2Ip;
 
   String get _tapoSnapshotUrl => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$_tapoStreamName';
-  String get _tapoStreamUrl => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcStreamPath?src=$_tapoStreamName';
+  String get _tapoStreamUrl => 'http://$_tapoRelayIp:$kGo2rtcApiPort$kGo2rtcStreamPath?src=$_tapoStreamName';
 
   // Back camera shares the same relay host/port, only the go2rtc stream name differs.
   String get _tapoSnapshotUrl2 => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$_tapoStreamName2';
-  String get _tapoStreamUrl2 => 'http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcStreamPath?src=$_tapoStreamName2';
+  String get _tapoStreamUrl2 => 'http://$_tapoRelayIp:$kGo2rtcApiPort$kGo2rtcStreamPath?src=$_tapoStreamName2';
 
   @override
   void initState() {
@@ -867,6 +869,7 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
   bool _connected = false;
   bool _loading = true;
   bool _useSnapshot = false;
+  bool _isFetchingFrame = false;
   int _refreshNonce = 0;
 
   String get _snapshotUrl => widget.snapshotUrlOverride ?? 'http://${widget.ip}$kEsp32SnapshotPath';
@@ -879,17 +882,17 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
       _loading = false;
       return;
     }
-    // On web builds the MJPEG stream often doesn't render correctly — use snapshot polling.
     if (kIsWeb) {
-      _useSnapshot = true;
-      _startSnapshotPolling();
+      _connected = true;
+      _loading = false;
     }
+    _useSnapshot = false;
   }
 
   void _startSnapshotPolling() {
     _timer?.cancel();
     _fetchFrame();
-    _timer = Timer.periodic(const Duration(milliseconds: 600), (_) => _fetchFrame());
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _fetchFrame());
   }
 
   void _refreshFeed() {
@@ -897,8 +900,8 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
 
     setState(() {
       _frame = null;
-      _connected = false;
-      _loading = true;
+      _connected = kIsWeb;
+      _loading = !kIsWeb;
       _refreshNonce++;
     });
 
@@ -908,8 +911,16 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
   }
 
   Future<void> _fetchFrame() async {
+    if (_isFetchingFrame) return;
+    _isFetchingFrame = true;
     try {
-      final response = await http.get(Uri.parse(_snapshotUrl)).timeout(const Duration(seconds: 2));
+      final snapshotUri = Uri.parse(_snapshotUrl).replace(
+        queryParameters: {
+          ...Uri.parse(_snapshotUrl).queryParameters,
+          'cb': DateTime.now().microsecondsSinceEpoch.toString(),
+        },
+      );
+      final response = await http.get(snapshotUri).timeout(const Duration(seconds: 8));
       if (response.statusCode == 200 && mounted) {
         setState(() {
           _frame = response.bodyBytes;
@@ -928,6 +939,7 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
         _loading = false;
       });
     }
+    _isFetchingFrame = false;
   }
 
   void _switchToSnapshotFallback() {
@@ -1026,6 +1038,11 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
                               ],
                             ),
                           )))
+                : kIsWeb
+                ? Go2rtcLiveView(
+                    key: ValueKey('$_streamUrl-$_refreshNonce'),
+                  url: _streamUrl,
+                  )
                 : Image.network(
                   key: ValueKey('$_streamUrl-$_refreshNonce'),
                   '$_streamUrl?cb=$_refreshNonce',
@@ -1081,9 +1098,6 @@ class Esp32SensorBar extends StatefulWidget {
 class _Esp32SensorBarState extends State<Esp32SensorBar> {
   final SecurityEventService _securityEventService = SecurityEventService();
   final NotificationPreferencesService _notificationPreferencesService = NotificationPreferencesService();
-  String _distance = '--';
-  String _status = 'Connecting...';
-  bool _motionDetected = false;
   bool _motionSensorEnabled = true;
   bool _pushAlertsEnabled = true;
   int _motionDetectionCounter = 0;
@@ -1126,9 +1140,6 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
         final isMotion = motionEnabled && rawMotion;
 
         setState(() {
-          _distance = dist < 0 ? 'Out of range' : '${dist.toStringAsFixed(1)} cm';
-          _status = 'Connected';
-          _motionDetected = isMotion;
           _motionSensorEnabled = motionEnabled;
           _pushAlertsEnabled = pushEnabled;
           _lastDistanceCm = dist.toDouble();
@@ -1151,9 +1162,6 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
 
     if (mounted) {
       setState(() {
-        _distance = '--';
-        _status = 'Disconnected';
-        _motionDetected = false;
         _motionSensorEnabled = motionEnabled;
         _pushAlertsEnabled = pushEnabled;
         _liveBlink = false;
@@ -1225,11 +1233,9 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
 
   @override
   Widget build(BuildContext context) {
-    final isConnected = _status == 'Connected';
-    final motionLabel = !_motionSensorEnabled
-        ? 'Movement: Sensor OFF'
-        : (_motionDetected ? 'Movement: Detected Movement' : 'Movement: None');
-    final motionColor = _motionDetected ? Colors.orangeAccent : Colors.white70;
+    final isActive = _motionSensorEnabled;
+    final motionLabel = isActive ? 'Movement: Sensor ON' : 'Movement: Sensor OFF';
+    final motionColor = isActive ? Colors.greenAccent : Colors.white70;
 
     return Container(
       width: double.infinity,
@@ -1252,7 +1258,7 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
                       'Motion Detector',
                       style: TextStyle(fontSize: 11, color: Colors.white70),
                     ),
-                    if (isConnected) ...[
+                    if (isActive) ...[
                       const SizedBox(width: 6),
                       AnimatedOpacity(
                         opacity: _liveBlink ? 1.0 : 0.25,
@@ -1284,17 +1290,6 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
                   ],
                 ),
                 Text(
-                  widget.showConditionLabel
-                      ? 'Condition: ${isConnected ? 'Good' : 'Bad'}'
-                      : 'Distance: $_distance',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
                   motionLabel,
                   style: TextStyle(
                     fontSize: 12,
@@ -1308,11 +1303,11 @@ class _Esp32SensorBarState extends State<Esp32SensorBar> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: isConnected ? Colors.green.shade700 : Colors.red.shade700,
+              color: isActive ? Colors.green.shade700 : Colors.red.shade700,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
-              _status,
+              isActive ? 'ACTIVE' : 'INACTIVE',
               style: const TextStyle(fontSize: 11, color: Colors.white),
             ),
           ),

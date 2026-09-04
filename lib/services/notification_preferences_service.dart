@@ -2,7 +2,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class NotificationPreferencesService {
   static const String _pushAlertsKey = 'pref_push_alerts_enabled';
+  static const String _aiDetectionKey = 'pref_ai_detection_enabled';
   static const String _motionAlertsKey = 'pref_motion_alerts_enabled';
+
+  Future<bool> getAiDetectionEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_aiDetectionKey) ?? true;
+  }
 
   Future<bool> getPushAlertsEnabled() async {
     final prefs = await SharedPreferences.getInstance();
@@ -12,6 +18,11 @@ class NotificationPreferencesService {
   Future<bool> getMotionAlertsEnabled() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_motionAlertsKey) ?? true;
+  }
+
+  Future<void> setAiDetectionEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_aiDetectionKey, value);
   }
 
   Future<void> setPushAlertsEnabled(bool value) async {

@@ -20,6 +20,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   final TextEditingController _passwordController = TextEditingController();
   final AuthService _authService = AuthService();
   bool _biometricEnabled = false;
+  bool _isPasswordVisible = false;
 
   @override
   void initState() {
@@ -96,7 +97,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
         if (_biometricEnabled) {
           await _authService.saveBiometricCredentials(email, password);
         }
-        _goToApp(email);
+        _goToApp(email, userInfo?.role);
         return;
       }
     } catch (e) {
@@ -119,8 +120,8 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
     );
   }
 
-  void _goToApp(String email) {
-    if (email.contains('admin')) {
+  void _goToApp(String email, [String? role]) {
+    if (role == 'Administrator' || email.contains('admin')) {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -249,7 +250,14 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
               const SizedBox(height: 48),
               _buildTextField(context, 'Email Address', Icons.email_outlined, _emailController),
               const SizedBox(height: 16),
-              _buildTextField(context, 'Password', Icons.lock_outline, _passwordController, obscureText: true),
+              _buildTextField(
+                context,
+                'Password',
+                Icons.lock_outline,
+                _passwordController,
+                obscureText: !_isPasswordVisible,
+                onVisibilityToggle: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+              ),
               const SizedBox(height: 32),
               const SizedBox(height: 16),
               if (_biometricEnabled)
@@ -372,7 +380,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           return;
         }
       }
-      _goToApp(email);
+      _goToApp(email, userInfo?.role);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -439,7 +447,14 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
     return await _authService.validateTwoFactor(userInfo, pinController.text.trim());
   }
 
-  Widget _buildTextField(BuildContext context, String hint, IconData icon, TextEditingController controller, {bool obscureText = false}) {
+  Widget _buildTextField(
+    BuildContext context,
+    String hint,
+    IconData icon,
+    TextEditingController controller, {
+    bool obscureText = false,
+    VoidCallback? onVisibilityToggle,
+  }) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final fieldBg = context.secondarySurface;
@@ -461,6 +476,13 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
         style: GoogleFonts.inter(color: textColor),
         decoration: InputDecoration(
           icon: Icon(icon, color: iconColor, size: 20),
+          suffixIcon: onVisibilityToggle == null
+              ? null
+              : IconButton(
+                  tooltip: obscureText ? 'Show password' : 'Hide password',
+                  onPressed: onVisibilityToggle,
+                  icon: Icon(obscureText ? Icons.visibility_off_outlined : Icons.visibility_outlined, color: iconColor),
+                ),
           hintText: hint,
           hintStyle: GoogleFonts.inter(color: hintColor),
           border: InputBorder.none,

@@ -33,6 +33,15 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Local Firebase Admin credentials used by the Tapo AI detector
+/secrets/
+*.service-account.json
+
+# Local AI detection evidence snapshots
+/snapshots/
+*.pt
+.venv*/
+
 # Persistent Chrome debug profile so SharedPreferences (camera IP config) survives
 # across `flutter run -d chrome` sessions.
 .chrome-debug-profile/

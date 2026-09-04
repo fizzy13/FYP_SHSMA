@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -80,9 +81,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<bool> _isCameraReachable(String streamName) async {
     try {
-      final uri = Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort$kGo2rtcSnapshotPath?src=$streamName');
-      final response = await http.get(uri).timeout(const Duration(seconds: 2));
-      return response.statusCode == 200;
+      final uri = Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort/health?src=$streamName');
+      final response = await http.get(uri).timeout(const Duration(seconds: 5));
+      if (response.statusCode != 200) return false;
+      return (jsonDecode(response.body) as Map<String, dynamic>)['online'] == true;
     } catch (_) {
       return false;
     }
