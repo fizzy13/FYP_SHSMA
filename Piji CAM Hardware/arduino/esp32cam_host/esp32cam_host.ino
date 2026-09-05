@@ -23,15 +23,11 @@
 #include <WiFi.h>
 #include "esp_http_server.h"
 
-// ===== CHANGE THESE =====
-const char* ssid     = "HF@JHI";
-const char* password = "hfmmmnnh";
-
-// Fixed IP for host camera
-IPAddress local_IP(192, 168, 1, 100); // Host is always .100
-IPAddress gateway(192, 168, 1, 254);    // your router IP — run ipconfig on PC to check
-IPAddress subnet(255, 255, 255, 0);
-// ========================
+// ===== WI-FI SETTINGS =====
+const char* ssid = "TOTOLINK-6C2A";
+const char* password = "12345678";
+// The portable router assigns this camera's IP address through DHCP.
+// ==========================
 
 // Ultrasonic sensor pins (both free on AI-Thinker ESP32-CAM)
 #define TRIG_PIN  14
@@ -209,8 +205,7 @@ void setup() {
   }
   Serial.println("Camera OK.");
 
-  // WiFi with fixed IP
-  WiFi.config(local_IP, gateway, subnet);
+  // Connect through the router using DHCP.
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {

@@ -14,15 +14,11 @@
 #include <WiFi.h>
 #include "esp_http_server.h"
 
-// ===== CHANGE THESE =====
-const char* ssid     = "HF@JHI";
-const char* password = "hfmmmnnh";
-
-// Fixed IP — change last number for each camera (101, 102, 103)
-IPAddress local_IP(192, 168, 1, 103); // Camera 2 = .101 | Camera 3 = .102 | Camera 4 = .103
-IPAddress gateway(192, 168, 1, 254);    // your router IP — run ipconfig on PC to check
-IPAddress subnet(255, 255, 255, 0);
-// ========================
+// ===== WI-FI SETTINGS =====
+const char* ssid = "TOTOLINK-6C2A";
+const char* password = "12345678";
+// The portable router assigns this camera's IP address through DHCP.
+// ==========================
 
 // Camera pins for AI-Thinker ESP32-CAM (do not change)
 #define PWDN_GPIO_NUM   32
@@ -175,8 +171,7 @@ void setup() {
   }
   Serial.println("Camera OK.");
 
-  // Connect to WiFi with fixed IP
-  WiFi.config(local_IP, gateway, subnet);
+  // Connect through the router using DHCP.
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {

@@ -49,7 +49,7 @@ const List<Map<String, String>> kEsp32DeviceList = [
 // Tapo cams only speak RTSP; a go2rtc relay (fronted by scripts/cors_proxy.dart
 // for CORS/Private-Network-Access) re-serves it as plain HTTP MJPEG/snapshot.
 // The relay host is the PC running go2rtc/cors_proxy, while the Tapo camera source is 192.168.1.17.
-const String kTapoDefaultRelayIp = String.fromEnvironment('TAPO_RELAY_IP', defaultValue: '192.168.1.13');
+const String kTapoDefaultRelayIp = String.fromEnvironment('TAPO_RELAY_IP', defaultValue: '192.168.0.200');
 const String kTapoCameraIp = '192.168.1.17';
 const String kTapoCamera2Ip = '192.168.1.18';
 const String kTapoDefaultRelayPort = '8090';
