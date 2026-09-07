@@ -11,14 +11,19 @@ import 'dart:io';
 const _targetHost = 'localhost';
 const _targetPort = 1984;
 const _listenPort = 8090;
-final _snapshotDirectory = Directory('${Directory.current.path}${Platform.pathSeparator}snapshots');
+final _snapshotDirectory = Directory(
+  '${Directory.current.path}${Platform.pathSeparator}snapshots',
+);
 
 void _addCorsHeaders(HttpResponse response) {
   response.headers.set('Access-Control-Allow-Origin', '*');
   response.headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.headers.set('Access-Control-Allow-Headers', '*');
   response.headers.set('Access-Control-Allow-Private-Network', 'true');
-  response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  response.headers.set(
+    'Cache-Control',
+    'no-store, no-cache, must-revalidate, max-age=0',
+  );
   response.headers.set('Pragma', 'no-cache');
 }
 
@@ -28,14 +33,8 @@ Future<void> _handleWebSocket(HttpRequest request) async {
 
   try {
     final upstreamSocket = await WebSocket.connect(upstreamUri.toString());
-    clientSocket.listen(
-      upstreamSocket.add,
-      onDone: upstreamSocket.close,
-    );
-    upstreamSocket.listen(
-      clientSocket.add,
-      onDone: clientSocket.close,
-    );
+    clientSocket.listen(upstreamSocket.add, onDone: upstreamSocket.close);
+    upstreamSocket.listen(clientSocket.add, onDone: clientSocket.close);
   } catch (_) {
     await clientSocket.close();
   }
@@ -43,13 +42,17 @@ Future<void> _handleWebSocket(HttpRequest request) async {
 
 Future<void> _handleSnapshot(HttpRequest request) async {
   final relativePath = request.uri.path.substring('/snapshots/'.length);
-  if (relativePath.isEmpty || relativePath.contains('..') || !relativePath.endsWith('.jpg')) {
+  if (relativePath.isEmpty ||
+      relativePath.contains('..') ||
+      !relativePath.endsWith('.jpg')) {
     request.response.statusCode = HttpStatus.badRequest;
     await request.response.close();
     return;
   }
 
-  final file = File('${_snapshotDirectory.path}${Platform.pathSeparator}${relativePath.replaceAll('/', Platform.pathSeparator)}');
+  final file = File(
+    '${_snapshotDirectory.path}${Platform.pathSeparator}${relativePath.replaceAll('/', Platform.pathSeparator)}',
+  );
   if (!await file.exists()) {
     request.response.statusCode = HttpStatus.notFound;
     await request.response.close();
@@ -58,6 +61,36 @@ Future<void> _handleSnapshot(HttpRequest request) async {
 
   _addCorsHeaders(request.response);
   request.response.headers.contentType = ContentType('image', 'jpeg');
+  await file.openRead().pipe(request.response);
+}
+
+Future<void> _handleRecording(HttpRequest request) async {
+  final relativePath = request.uri.path.substring('/recordings/'.length);
+  if (relativePath.isEmpty ||
+      relativePath.contains('..') ||
+      !relativePath.endsWith('.mp4')) {
+    request.response.statusCode = HttpStatus.badRequest;
+    await request.response.close();
+    return;
+  }
+
+  final file = File(
+    '${_snapshotDirectory.path}${Platform.pathSeparator}${relativePath.replaceAll('/', Platform.pathSeparator)}',
+  );
+  if (!await file.exists()) {
+    request.response.statusCode = HttpStatus.notFound;
+    await request.response.close();
+    return;
+  }
+
+  _addCorsHeaders(request.response);
+  request.response.headers.contentType = ContentType('video', 'mp4');
+  request.response.headers.set('Accept-Ranges', 'bytes');
+  request.response.headers.contentLength = await file.length();
+  if (request.method == 'HEAD') {
+    await request.response.close();
+    return;
+  }
   await file.openRead().pipe(request.response);
 }
 
@@ -77,7 +110,9 @@ Future<void> _handleHealth(HttpClient client, HttpRequest request) async {
     final stream = streams[streamName] as Map<String, dynamic>?;
     final producers = stream?['producers'] as List<dynamic>? ?? const [];
 
-    request.response.statusCode = producers.isNotEmpty ? HttpStatus.ok : HttpStatus.serviceUnavailable;
+    request.response.statusCode = producers.isNotEmpty
+        ? HttpStatus.ok
+        : HttpStatus.serviceUnavailable;
     _addCorsHeaders(request.response);
     request.response.headers.contentType = ContentType.json;
     request.response.write(jsonEncode({'online': producers.isNotEmpty}));
@@ -90,7 +125,8 @@ Future<void> _handleHealth(HttpClient client, HttpRequest request) async {
 }
 
 Future<void> _handleRequest(HttpClient client, HttpRequest request) async {
-  if (request.uri.path == '/api/ws' && WebSocketTransformer.isUpgradeRequest(request)) {
+  if (request.uri.path == '/api/ws' &&
+      WebSocketTransformer.isUpgradeRequest(request)) {
     await _handleWebSocket(request);
     return;
   }
@@ -105,6 +141,11 @@ Future<void> _handleRequest(HttpClient client, HttpRequest request) async {
 
   if (request.uri.path.startsWith('/snapshots/')) {
     await _handleSnapshot(request);
+    return;
+  }
+
+  if (request.uri.path.startsWith('/recordings/')) {
+    await _handleRecording(request);
     return;
   }
 
@@ -148,7 +189,9 @@ Future<void> main() async {
   // Use a fresh HttpClient per request handler set so one slow/broken camera
   // connection can't stall connection reuse for the other camera's requests.
   final server = await HttpServer.bind(InternetAddress.anyIPv4, _listenPort);
-  stdout.writeln('CORS proxy listening on http://0.0.0.0:$_listenPort -> http://$_targetHost:$_targetPort');
+  stdout.writeln(
+    'CORS proxy listening on http://0.0.0.0:$_listenPort -> http://$_targetHost:$_targetPort',
+  );
 
   final client = HttpClient()..maxConnectionsPerHost = 20;
 

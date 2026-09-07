@@ -25,8 +25,18 @@ if errorlevel 1 (
 echo Starting camera relays...
 call "%PROJECT_ROOT%\scripts\start_camera_relays.bat"
 
-curl.exe --silent --show-error --fail --max-time 10 "http://127.0.0.1:8090/api/frame.jpeg?src=tapo1" -o NUL
-if errorlevel 1 (
+set "RELAY_READY="
+for /l %%I in (1,1,30) do (
+  curl.exe --silent --show-error --fail --max-time 2 "http://127.0.0.1:8090/api/frame.jpeg?src=tapo1" -o NUL >nul 2>&1
+  if not errorlevel 1 (
+    set "RELAY_READY=1"
+    goto relay_ready
+  )
+  timeout /t 1 /nobreak >nul
+)
+
+:relay_ready
+if not defined RELAY_READY (
   echo Camera relay did not start. Check that go2rtc and the CORS proxy can use ports 1984 and 8090.
   exit /b 1
 )

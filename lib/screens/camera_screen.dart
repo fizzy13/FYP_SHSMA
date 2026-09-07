@@ -871,6 +871,9 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
   bool _useSnapshot = false;
   bool _isFetchingFrame = false;
   int _refreshNonce = 0;
+  // Reused across polls so each 1s snapshot fetch doesn't pay for a fresh TCP handshake
+  // (connection setup is much slower over the Android emulator's NAT link).
+  final http.Client _httpClient = http.Client();
 
   String get _snapshotUrl => widget.snapshotUrlOverride ?? 'http://${widget.ip}$kEsp32SnapshotPath';
   String get _streamUrl => widget.streamUrlOverride ?? 'http://${widget.ip}$kEsp32StreamPath';
@@ -920,7 +923,7 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
           'cb': DateTime.now().microsecondsSinceEpoch.toString(),
         },
       );
-      final response = await http.get(snapshotUri).timeout(const Duration(seconds: 8));
+      final response = await _httpClient.get(snapshotUri).timeout(const Duration(seconds: 12));
       if (response.statusCode == 200 && mounted) {
         setState(() {
           _frame = response.bodyBytes;
@@ -931,6 +934,9 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
       }
     } catch (_) {
       // ignore and show disconnected state
+    } finally {
+      // Must always clear this, otherwise every future timer tick is skipped and the feed freezes on the first frame.
+      _isFetchingFrame = false;
     }
 
     if (mounted) {
@@ -939,7 +945,6 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
         _loading = false;
       });
     }
-    _isFetchingFrame = false;
   }
 
   void _switchToSnapshotFallback() {
@@ -952,6 +957,7 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
   @override
   void dispose() {
     _timer?.cancel();
+    _httpClient.close();
     super.dispose();
   }
 

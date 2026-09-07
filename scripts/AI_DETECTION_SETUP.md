@@ -28,9 +28,11 @@ Run this one command. It starts the camera relays and the AI detector, and creat
 scripts\run_ai_detection.bat
 ```
 
-The first execution downloads the compact `yolo11n.pt` model. The script analyzes each camera once every two seconds from the local relay snapshots, requires two consecutive matching samples, and suppresses duplicate alerts for 30 seconds per camera and detected class. Do not start a second copy of this script.
+The first execution downloads the compact `yolo11n.pt` model. The script analyzes each camera once every two seconds from the local relay snapshots, requires two consecutive matching samples, and suppresses duplicate alerts for 10 seconds per camera and detected class. Do not start a second copy of this script.
 
 After starting the detector, run `flutter run -d chrome` in a separate terminal and log into the SHSMA account that should receive the camera alerts. Each successful login makes that account the active owner for AI alerts. Use Ctrl+C to stop the detector.
+
+When an AI person or animal detection is confirmed, the detector saves the existing snapshot, records a 10-second MP4 from the matching Tapo RTSP stream, stores the MP4 under `snapshots\\tapo1` or `snapshots\\tapo2`, and writes its local relay URL in both the `Alerts` document and the `ai_detection_recordings` collection. Tap an AI alert in the Alerts screen to play the recording. Motion-only alerts do not create recordings. Firebase Storage and the Blaze plan are not required.
 
 Do not run `start_camera_relays.bat` separately: `run_ai_detection.bat` starts it for you.
 

@@ -41,6 +41,7 @@ dependencies:
   url_launcher: ^6.3.2
   shared_preferences: ^2.5.3
   just_audio: ^0.9.42
+  video_player: ^2.9.2
   web: ^1.1.1
 
 dev_dependencies:

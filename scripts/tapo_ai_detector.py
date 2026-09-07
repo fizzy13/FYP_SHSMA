@@ -10,6 +10,7 @@ file before starting the detector.
 import argparse
 import logging
 import os
+import subprocess
 import time
 import urllib.parse
 import urllib.request
@@ -38,8 +39,8 @@ class Camera:
 
 
 DEFAULT_CAMERAS = (
-    Camera("tapo1", "Front Camera", "192.168.1.17"),
-    Camera("tapo2", "Back Camera", "192.168.1.18"),
+    Camera("tapo1", "Front Camera", "192.168.0.11"),
+    Camera("tapo2", "Back Camera", "192.168.0.12"),
 )
 
 
@@ -48,11 +49,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="yolo11n.pt", help="Ultralytics model name or local weights path.")
     parser.add_argument("--confidence", type=float, default=0.65, help="Minimum detection confidence (0-1).")
     parser.add_argument("--sample-seconds", type=float, default=2.0, help="Seconds between analyzed frames per camera.")
-    parser.add_argument("--cooldown-seconds", type=float, default=30.0, help="Alert cooldown for each camera and class.")
+    parser.add_argument("--cooldown-seconds", type=float, default=10.0, help="Alert cooldown for each camera and class.")
     parser.add_argument("--confirmations", type=int, default=2, help="Matching samples needed before alerting.")
     parser.add_argument("--device", default=None, help="YOLO device, for example cpu or 0 for the first NVIDIA GPU.")
     parser.add_argument("--relay-url", default="http://127.0.0.1:8090", help="Local CORS proxy URL.")
     parser.add_argument("--snapshot-base-url", default="http://127.0.0.1:8090", help="Relay URL visible to the SHSMA app.")
+    parser.add_argument("--ffmpeg", default=None, help="Path to ffmpeg executable used for AI event recordings.")
     return parser.parse_args()
 
 
@@ -112,6 +114,35 @@ def save_detection_snapshot(camera: Camera, detected_class: str, frame: np.ndarr
     return f"snapshots/{camera.identifier}/{filename}"
 
 
+def record_detection_video(camera: Camera, output_path: str, ffmpeg_path: str) -> bool:
+    rtsp_url = f"rtsp://127.0.0.1:8554/{camera.identifier}"
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-rtsp_transport", "tcp",
+        "-i", rtsp_url,
+        "-t", "10",
+        "-an",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logging.warning("Could not record %s: %s", camera.label, result.stderr[-500:])
+            return False
+        recorded = os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+        if not recorded:
+            logging.warning("FFmpeg produced no recording for %s.", camera.label)
+        return recorded
+    except (OSError, subprocess.TimeoutExpired) as error:
+        logging.warning("Could not record %s: %s", camera.label, error)
+        return False
+
+
 def create_alert(
     database: firestore.Client,
     camera: Camera,
@@ -120,6 +151,7 @@ def create_alert(
     user_id: str | None,
     frame: np.ndarray,
     snapshot_base_url: str,
+    ffmpeg_path: str,
 ) -> None:
     category = "Person Detected" if detected_class == "person" else "Animal Detected"
     message = f"{detected_class.title()} detected at {camera.label} ({confidence:.0%} confidence)."
@@ -141,11 +173,31 @@ def create_alert(
     if image_path is not None:
         alert["imagePath"] = image_path
         alert["imageUrl"] = f"{snapshot_base_url.rstrip('/')}/{image_path}"
+    video_directory = os.path.join(SNAPSHOT_DIRECTORY, camera.identifier)
+    os.makedirs(video_directory, exist_ok=True)
+    video_path = os.path.join(video_directory, f"{time.time_ns()}-{detected_class}.mp4")
+    if record_detection_video(camera, video_path, ffmpeg_path):
+        relative_video_path = f"recordings/{camera.identifier}/{os.path.basename(video_path)}"
+        alert["videoPath"] = relative_video_path
+        alert["videoUrl"] = f"{snapshot_base_url.rstrip('/')}/{relative_video_path}"
+        alert["videoDurationSeconds"] = 10
     if user_id:
         alert["userId"] = user_id
     else:
         logging.warning("No SHSMA user has logged in yet; saving a shared alert.")
-    database.collection("Alerts").add(alert)
+    alert_reference = database.collection("Alerts").add(alert)
+    if "videoPath" in alert:
+        database.collection("ai_detection_recordings").add({
+            "alertId": alert_reference[1].id,
+            "videoUrl": alert["videoUrl"],
+            "videoPath": alert["videoPath"],
+            "cameraId": camera.identifier,
+            "cameraLabel": camera.label,
+            "detectedClass": detected_class,
+            "confidence": round(confidence, 4),
+            "durationSeconds": 10,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        })
     logging.info("Alert sent: %s on %s (%.0f%%)", detected_class, camera.label, confidence * 100)
 
 
@@ -183,11 +235,15 @@ def main() -> None:
         raise ValueError("Sampling, cooldown, and confirmation values must be positive.")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    ffmpeg_path = args.ffmpeg or os.path.join(os.path.dirname(os.path.dirname(__file__)), "go2rtc_win64", "ffmpeg.exe")
+    if not os.path.isfile(ffmpeg_path):
+        raise RuntimeError(f"FFmpeg was not found at {ffmpeg_path}. Pass --ffmpeg with a valid path.")
     database = initialize_firestore()
     model = YOLO(args.model)
     confirmations: dict[tuple[str, str], int] = defaultdict(int)
     last_alert_at: dict[tuple[str, str], float] = defaultdict(float)
     previous_frames: dict[str, np.ndarray] = {}
+    previous_ai_detection_enabled = True
 
     try:
         while True:
@@ -195,10 +251,17 @@ def main() -> None:
             settings = get_camera_settings(database)
             motion_alerts_enabled = settings.get("motionAlertsEnabled", True)
             ai_detection_enabled = settings.get("aiDetectionEnabled", True)
+            if ai_detection_enabled != previous_ai_detection_enabled:
+                for camera in DEFAULT_CAMERAS:
+                    for detected_class in ALLOWED_CLASSES:
+                        confirmations.pop((camera.identifier, detected_class), None)
+                        last_alert_at.pop((camera.identifier, detected_class), None)
+                previous_ai_detection_enabled = ai_detection_enabled
             for camera in DEFAULT_CAMERAS:
-                if not motion_alerts_enabled:
+                if not motion_alerts_enabled and not ai_detection_enabled:
                     for detected_class in ALLOWED_CLASSES:
                         confirmations[(camera.identifier, detected_class)] = 0
+                    previous_frames.pop(camera.identifier, None)
                     continue
 
                 try:
@@ -211,10 +274,14 @@ def main() -> None:
                     continue
 
                 if not ai_detection_enabled:
+                    for detected_class in ALLOWED_CLASSES:
+                        confirmations[(camera.identifier, detected_class)] = 0
                     grayscale = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 90))
                     previous = previous_frames.get(camera.identifier)
                     previous_frames[camera.identifier] = grayscale
                     if previous is None:
+                        continue
+                    if not motion_alerts_enabled:
                         continue
                     changed_ratio = float(np.mean(cv2.absdiff(grayscale, previous) > 25))
                     key = (camera.identifier, "motion")
@@ -246,6 +313,7 @@ def main() -> None:
                         settings.get("uid"),
                         frame,
                         args.snapshot_base_url,
+                        ffmpeg_path,
                     )
                     last_alert_at[key] = time.monotonic()
                     confirmations[key] = 0

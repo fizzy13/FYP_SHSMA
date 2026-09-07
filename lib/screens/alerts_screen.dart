@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart' hide UserInfo;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart';
 import '../auth_service.dart';
 import '../models/user_model.dart';
 import '../services/security_event_service.dart';
@@ -22,6 +23,13 @@ class AlertsScreen extends StatefulWidget {
 class _AlertsScreenState extends State<AlertsScreen> {
   String? _lastShownAlertId;
   bool _receivedInitialAlerts = false;
+
+  Future<void> _showAiVideo(String videoUrl) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _AiDetectionVideoDialog(videoUrl: videoUrl),
+    );
+  }
 
   Future<void> _confirmAndCallPolice() async {
     final confirmed = await showDialog<bool>(
@@ -694,7 +702,8 @@ class _AlertsScreenState extends State<AlertsScreen> {
                               final time = _formatTimestamp(data['timestamp']);
                               final status =
                                   data['status'] as String? ?? 'LIVE';
-                                final itemImageUrl = data['imageUrl'] as String?;
+                              final itemImageUrl = data['imageUrl'] as String?;
+                              final itemVideoUrl = data['videoUrl'] as String?;
 
                               return _buildEventCard(
                                 context,
@@ -704,6 +713,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                                 status,
                                 message,
                                 itemImageUrl,
+                                videoUrl: itemVideoUrl,
                                 labelColor: const Color(0xFFFF6B6B),
                                 onDelete: () => _deleteAlert(docId),
                               );
@@ -731,6 +741,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
     String tag,
     String note,
     String? imagePath, {
+    String? videoUrl,
     Color? labelColor,
     VoidCallback? onDelete,
   }) {
@@ -741,14 +752,17 @@ class _AlertsScreenState extends State<AlertsScreen> {
     final panel = context.tertiarySurface;
     final noteColor = labelColor ?? context.mutedText;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: surface,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Row(
+    return InkWell(
+      onTap: videoUrl == null ? null : () => _showAiVideo(videoUrl),
+      borderRadius: BorderRadius.circular(24),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: surface,
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Row(
         children: [
           Container(
             width: 70,
@@ -834,15 +848,77 @@ class _AlertsScreenState extends State<AlertsScreen> {
               ],
             ),
           ),
-          if (onDelete != null)
-            IconButton(
-              icon: const Icon(Icons.close, color: Colors.white30, size: 18),
-              onPressed: onDelete,
-            )
-          else
-            Icon(Icons.chevron_right, color: muted, size: 20),
-        ],
+            if (onDelete != null)
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white30, size: 18),
+                onPressed: onDelete,
+              )
+            else
+              Icon(Icons.chevron_right, color: muted, size: 20),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _AiDetectionVideoDialog extends StatefulWidget {
+  const _AiDetectionVideoDialog({required this.videoUrl});
+
+  final String videoUrl;
+
+  @override
+  State<_AiDetectionVideoDialog> createState() => _AiDetectionVideoDialogState();
+}
+
+class _AiDetectionVideoDialogState extends State<_AiDetectionVideoDialog> {
+  late final VideoPlayerController _controller;
+  late final Future<void> _initialization;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
+    _initialization = _controller.initialize().then((_) {
+      _controller.play();
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('AI Detection Recording'),
+      content: FutureBuilder<void>(
+        future: _initialization,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const SizedBox(
+              height: 180,
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (snapshot.hasError || !_controller.value.isInitialized) {
+            return const Text('The recording could not be loaded.');
+          }
+          return AspectRatio(
+            aspectRatio: _controller.value.aspectRatio,
+            child: VideoPlayer(_controller),
+          );
+        },
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
     );
   }
 }
