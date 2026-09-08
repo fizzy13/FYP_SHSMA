@@ -889,6 +889,10 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
       _loading = false;
       return;
     }
+    if (kIsWeb && !_useSnapshot) {
+      _connected = true;
+      _loading = false;
+    }
   }
 
   void _startSnapshotPolling() {
