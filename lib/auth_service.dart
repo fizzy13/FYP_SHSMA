@@ -33,6 +33,18 @@ class AuthService {
     final user = userCredential.user;
     if (user != null) {
       await _setActiveCameraOwner(user);
+      try {
+        await _firestore.collection('activity_logs').add({
+          'userId': user.uid,
+          'activityType': 'USER_LOGIN',
+          'description': 'User logged in',
+          'source': 'AUTHENTICATION',
+          'timestamp': FieldValue.serverTimestamp(),
+          'clientTimestamp': Timestamp.fromDate(DateTime.now()),
+        });
+      } catch (error) {
+        debugPrint('Could not record user login activity: $error');
+      }
     }
     return user;
   }
@@ -108,7 +120,9 @@ class AuthService {
     required String username,
     required String password,
   }) async {
-    final email = username.contains('@') ? username.trim() : '${username.trim()}@shsma-web.firebaseapp.com';
+    final email = username.contains('@')
+        ? username.trim()
+        : '${username.trim()}@shsma-web.firebaseapp.com';
     FirebaseApp? secondaryApp;
     try {
       secondaryApp = await Firebase.initializeApp(
@@ -143,7 +157,8 @@ class AuthService {
   Future<User?> loginWithBiometrics() async {
     try {
       if (!kIsWeb) {
-        final canAuthenticate = await _localAuth.canCheckBiometrics ||
+        final canAuthenticate =
+            await _localAuth.canCheckBiometrics ||
             await _localAuth.isDeviceSupported();
         if (!canAuthenticate) {
           return null;
@@ -162,7 +177,9 @@ class AuthService {
       }
 
       final storedEmail = await _credentialStorage.read('biometric_email');
-      final storedPassword = await _credentialStorage.read('biometric_password');
+      final storedPassword = await _credentialStorage.read(
+        'biometric_password',
+      );
       if (storedEmail == null || storedPassword == null) {
         return null;
       }
@@ -180,7 +197,10 @@ class AuthService {
   }
 
   Future<void> setBiometricEnabled(bool enabled) async {
-    await _credentialStorage.write(_biometricEnabledKey, enabled ? 'true' : 'false');
+    await _credentialStorage.write(
+      _biometricEnabledKey,
+      enabled ? 'true' : 'false',
+    );
     if (!enabled) {
       await clearBiometricCredentials();
     }
@@ -215,10 +235,8 @@ class AuthService {
     String country,
   ) async {
     try {
-      UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
+      UserCredential userCredential = await _auth
+          .createUserWithEmailAndPassword(email: email, password: password);
 
       if (userCredential.user != null) {
         final uid = userCredential.user!.uid;
@@ -253,13 +271,16 @@ class AuthService {
     if (currentUser == null) return null;
     final userInfo = await _userInfoService.getUserInfoByUid(currentUser.uid);
     if (userInfo != null) {
-      if (userInfo.fullName.isNotEmpty && currentUser.displayName != userInfo.fullName) {
+      if (userInfo.fullName.isNotEmpty &&
+          currentUser.displayName != userInfo.fullName) {
         await currentUser.updateDisplayName(userInfo.fullName);
       }
       return userInfo;
     }
     if (currentUser.email != null) {
-      final fallbackUserInfo = await _userInfoService.getUserInfoByEmail(currentUser.email!);
+      final fallbackUserInfo = await _userInfoService.getUserInfoByEmail(
+        currentUser.email!,
+      );
       if (fallbackUserInfo != null &&
           fallbackUserInfo.fullName.isNotEmpty &&
           currentUser.displayName != fallbackUserInfo.fullName) {
@@ -272,17 +293,24 @@ class AuthService {
 
   Future<void> enableTwoFactor(UserInfo userInfo, String pin) async {
     final pinHash = hashSecret(pin);
-    final updated = userInfo.copyWith(twoFactorEnabled: true, twoFactorPinHash: pinHash);
+    final updated = userInfo.copyWith(
+      twoFactorEnabled: true,
+      twoFactorPinHash: pinHash,
+    );
     await _userInfoService.saveUserInfo(updated);
   }
 
   Future<bool> validateTwoFactor(UserInfo userInfo, String pin) async {
-    if (!userInfo.twoFactorEnabled || userInfo.twoFactorPinHash == null) return false;
+    if (!userInfo.twoFactorEnabled || userInfo.twoFactorPinHash == null)
+      return false;
     return userInfo.twoFactorPinHash == hashSecret(pin);
   }
 
   Future<void> disableTwoFactor(UserInfo userInfo) async {
-    final updated = userInfo.copyWith(twoFactorEnabled: false, twoFactorPinHash: null);
+    final updated = userInfo.copyWith(
+      twoFactorEnabled: false,
+      twoFactorPinHash: null,
+    );
     await _userInfoService.saveUserInfo(updated);
   }
 

@@ -81,7 +81,7 @@ void main(List<String> args) async {
   await sendMotionAlertToFirestore(
     cameraLabel: 'Front Camera',
     message: '"Front Camera": Motion was detected at $formattedTime.',
-    cameraIp: '192.168.1.17',
+    cameraIp: '192.168.0.11',
     userId: userId,
   );
 }

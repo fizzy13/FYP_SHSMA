@@ -48,10 +48,10 @@ const List<Map<String, String>> kEsp32DeviceList = [
 
 // Tapo cams only speak RTSP; a go2rtc relay (fronted by scripts/cors_proxy.dart
 // for CORS/Private-Network-Access) re-serves it as plain HTTP MJPEG/snapshot.
-// The relay host is the PC running go2rtc/cors_proxy, while the Tapo camera source is 192.168.1.17.
+// The relay host is the PC running go2rtc/cors_proxy, while the Tapo cameras use 192.168.0.11 and .12.
 const String kTapoDefaultRelayIp = String.fromEnvironment('TAPO_RELAY_IP', defaultValue: '192.168.0.200');
-const String kTapoCameraIp = '192.168.1.17';
-const String kTapoCamera2Ip = '192.168.1.18';
+const String kTapoCameraIp = '192.168.0.11';
+const String kTapoCamera2Ip = '192.168.0.12';
 const String kTapoDefaultRelayPort = '8090';
 const String kGo2rtcApiPort = '1984';
 const String kTapoDefaultStreamName = 'tapo1';
@@ -671,7 +671,7 @@ class _Esp32CameraSectionState extends State<Esp32CameraSection> {
                     TextField(
                       controller: tapoIpController,
                       enabled: isEditing,
-                      decoration: const InputDecoration(labelText: 'Relay PC IP (camera is 192.168.1.17)'),
+                      decoration: const InputDecoration(labelText: 'Relay PC IP (camera is 192.168.0.11)'),
                     ),
                     TextField(
                       controller: tapoPortController,
@@ -828,12 +828,14 @@ class _Esp32CameraSectionState extends State<Esp32CameraSection> {
                 label: 'Front Camera',
                 snapshotUrlOverride: _tapoSnapshotUrl,
                 streamUrlOverride: _tapoStreamUrl,
+                isTapo: true,
               ),
               CameraFeedCard(
                 ip: _tapoRelayIp,
                 label: 'Back Camera',
                 snapshotUrlOverride: _tapoSnapshotUrl2,
                 streamUrlOverride: _tapoStreamUrl2,
+                isTapo: true,
               ),
             ],
           ),
@@ -847,6 +849,7 @@ class CameraFeedCard extends StatefulWidget {
   final String ip;
   final String label;
   final bool configured;
+  final bool isTapo;
   final String? snapshotUrlOverride;
   final String? streamUrlOverride;
 
@@ -855,6 +858,7 @@ class CameraFeedCard extends StatefulWidget {
     required this.ip,
     required this.label,
     this.configured = true,
+    this.isTapo = false,
     this.snapshotUrlOverride,
     this.streamUrlOverride,
   });
@@ -885,11 +889,6 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
       _loading = false;
       return;
     }
-    if (kIsWeb) {
-      _connected = true;
-      _loading = false;
-    }
-    _useSnapshot = false;
   }
 
   void _startSnapshotPolling() {
@@ -1013,7 +1012,10 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
             ),
           ),
           Expanded(
-            child: !widget.configured
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: !widget.configured
                 ? const Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -1083,6 +1085,32 @@ class _CameraFeedCardState extends State<CameraFeedCard> {
                       );
                     },
                   ),
+                ),
+                if (widget.isTapo)
+                  Positioned(
+                    left: 10,
+                    bottom: 10,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.62),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        child: Text(
+                          'tapo',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.4,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ],
       ),

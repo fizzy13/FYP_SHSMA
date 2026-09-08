@@ -23,6 +23,13 @@ class AlertsScreen extends StatefulWidget {
 class _AlertsScreenState extends State<AlertsScreen> {
   String? _lastShownAlertId;
   bool _receivedInitialAlerts = false;
+  final ScrollController _alertsScrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _alertsScrollController.dispose();
+    super.dispose();
+  }
 
   Future<void> _showAiVideo(String videoUrl) async {
     await showDialog<void>(
@@ -137,7 +144,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
     await securityService.createMotionAlertAndLog(
       cameraLabel: 'Front Camera',
       message: '"Front Camera": Motion was detected at $formattedTime.',
-      sourceIp: '192.168.1.17',
+      sourceIp: '192.168.0.11',
     );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -681,8 +688,10 @@ class _AlertsScreenState extends State<AlertsScreen> {
                       ConstrainedBox(
                         constraints: const BoxConstraints(maxHeight: 420),
                         child: Scrollbar(
+                          controller: _alertsScrollController,
                           thumbVisibility: docs.length > 3,
                           child: ListView.builder(
+                            controller: _alertsScrollController,
                             shrinkWrap: true,
                             physics: const BouncingScrollPhysics(),
                             itemCount: docs.length,

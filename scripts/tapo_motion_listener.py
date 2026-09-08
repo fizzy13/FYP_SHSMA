@@ -6,7 +6,7 @@
 # 3. Posts the alert to Firebase Firestore 'Alerts' collection via REST API.
 #
 # Usage:
-#   python scripts/tapo_motion_listener.py --ip 192.168.1.17 --user Fizzy13 --pass Hafizi@13
+#   python scripts/tapo_motion_listener.py --ip 192.168.0.11 --user Fizzy13 --pass Hafizi@13
 
 import argparse
 import datetime
@@ -44,7 +44,7 @@ def send_motion_alert_to_firebase(camera_label, message, camera_ip):
 
 def main():
     parser = argparse.ArgumentParser(description="Tapo Camera Motion Detection Listener")
-    parser.add_argument("--ip", default="192.168.1.17", help="Tapo Camera IP address")
+    parser.add_argument("--ip", default="192.168.0.11", help="Tapo Camera IP address")
     parser.add_argument("--name", default="Front Camera", help="Camera Label Name")
     args = parser.parse_args()
 

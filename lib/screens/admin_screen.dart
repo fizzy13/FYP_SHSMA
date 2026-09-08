@@ -41,6 +41,8 @@ class _AdminScreenState extends State<AdminScreen> {
   // Live-polled camera reachability, mirrors the user dashboard status tiles.
   bool _frontCameraOnline = false;
   bool _backCameraOnline = false;
+  bool _cameraProxyOnline = false;
+  bool _go2rtcOnline = false;
   Timer? _cameraStatusTimer;
   String _tapoRelayIp = kTapoDefaultRelayIp;
   String _tapoRelayPort = kTapoDefaultRelayPort;
@@ -66,7 +68,7 @@ class _AdminScreenState extends State<AdminScreen> {
         .where(
           'timestamp',
           isGreaterThanOrEqualTo: Timestamp.fromDate(
-            DateTime.now().subtract(const Duration(days: 7)),
+            _startOfCurrentWeek(DateTime.now()),
           ),
         )
         .snapshots();
@@ -86,41 +88,73 @@ class _AdminScreenState extends State<AdminScreen> {
 
     final savedTapoIp = prefs.getString(_kPrefTapoRelayIp);
     setState(() {
-      _tapoRelayIp = savedTapoIp == kTapoCameraIp || savedTapoIp == null || savedTapoIp.trim().isEmpty
+      _tapoRelayIp =
+          savedTapoIp == kTapoCameraIp ||
+              savedTapoIp == null ||
+              savedTapoIp.trim().isEmpty
           ? kTapoDefaultRelayIp
           : savedTapoIp;
-      _tapoRelayPort = prefs.getString(_kPrefTapoRelayPort) ?? kTapoDefaultRelayPort;
-      _tapoStreamName = prefs.getString(_kPrefTapoStreamName) ?? kTapoDefaultStreamName;
-      _tapoStreamName2 = prefs.getString(_kPrefTapoStreamName2) ?? kTapoDefaultStreamName2;
+      _tapoRelayPort =
+          prefs.getString(_kPrefTapoRelayPort) ?? kTapoDefaultRelayPort;
+      _tapoStreamName =
+          prefs.getString(_kPrefTapoStreamName) ?? kTapoDefaultStreamName;
+      _tapoStreamName2 =
+          prefs.getString(_kPrefTapoStreamName2) ?? kTapoDefaultStreamName2;
     });
 
     _pollCameraStatus();
-    _cameraStatusTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollCameraStatus());
+    _cameraStatusTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _pollCameraStatus(),
+    );
   }
 
   Future<bool> _isCameraReachable(String streamName) async {
     try {
-      final uri = Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort/health?src=$streamName');
+      final uri = Uri.parse(
+        'http://$_tapoRelayIp:$_tapoRelayPort/health?src=$streamName',
+      );
       final response = await http.get(uri).timeout(const Duration(seconds: 5));
       if (response.statusCode != 200) return false;
-      return (jsonDecode(response.body) as Map<String, dynamic>)['online'] == true;
+      return (jsonDecode(response.body) as Map<String, dynamic>)['online'] ==
+          true;
     } catch (_) {
       return false;
     }
   }
 
   Future<void> _pollCameraStatus() async {
-    final front = await _isCameraReachable(_tapoStreamName);
-    final back = await _isCameraReachable(_tapoStreamName2);
+    final results = await Future.wait([
+      _isCameraReachable(_tapoStreamName),
+      _isCameraReachable(_tapoStreamName2),
+      _pollRelayServices(),
+    ]);
     if (!mounted) return;
     setState(() {
-      _frontCameraOnline = front;
-      _backCameraOnline = back;
+      _frontCameraOnline = results[0] as bool;
+      _backCameraOnline = results[1] as bool;
+      final services = results[2] as ({bool proxy, bool go2rtc});
+      _cameraProxyOnline = services.proxy;
+      _go2rtcOnline = services.go2rtc;
     });
   }
 
+  Future<({bool proxy, bool go2rtc})> _pollRelayServices() async {
+    try {
+      final response = await http
+          .get(Uri.parse('http://$_tapoRelayIp:$_tapoRelayPort/api/streams'))
+          .timeout(const Duration(seconds: 5));
+      return (proxy: true, go2rtc: response.statusCode == 200);
+    } catch (_) {
+      return (proxy: false, go2rtc: false);
+    }
+  }
+
   Future<void> _loadManagedDetectionOptions() async {
-    final settings = await _firestore.collection('ai_detection_settings').doc('current').get();
+    final settings = await _firestore
+        .collection('ai_detection_settings')
+        .doc('current')
+        .get();
     if (!mounted || !settings.exists) return;
     final data = settings.data()!;
     setState(() {
@@ -129,7 +163,10 @@ class _AdminScreenState extends State<AdminScreen> {
     });
   }
 
-  Future<void> _updateManagedDetectionOptions({bool? human, bool? animal}) async {
+  Future<void> _updateManagedDetectionOptions({
+    bool? human,
+    bool? animal,
+  }) async {
     final nextHuman = human ?? _humanDetection;
     final nextAnimal = animal ?? _animalDetection;
     setState(() {
@@ -148,7 +185,9 @@ class _AdminScreenState extends State<AdminScreen> {
         _animalDetection = !nextAnimal;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to update AI detection settings.')),
+        const SnackBar(
+          content: Text('Unable to update AI detection settings.'),
+        ),
       );
     }
   }
@@ -165,7 +204,10 @@ class _AdminScreenState extends State<AdminScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: Text('Add Administrator', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+          title: Text(
+            'Add Administrator',
+            style: GoogleFonts.outfit(fontWeight: FontWeight.bold),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -181,15 +223,26 @@ class _AdminScreenState extends State<AdminScreen> {
                 decoration: InputDecoration(
                   labelText: 'Password',
                   suffixIcon: IconButton(
-                    tooltip: passwordVisible ? 'Hide password' : 'Show password',
-                    onPressed: () => setDialogState(() => passwordVisible = !passwordVisible),
-                    icon: Icon(passwordVisible ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                    tooltip: passwordVisible
+                        ? 'Hide password'
+                        : 'Show password',
+                    onPressed: () => setDialogState(
+                      () => passwordVisible = !passwordVisible,
+                    ),
+                    icon: Icon(
+                      passwordVisible
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                    ),
                   ),
                 ),
               ),
               if (errorMessage != null) ...[
                 const SizedBox(height: 12),
-                Text(errorMessage!, style: const TextStyle(color: Colors.redAccent)),
+                Text(
+                  errorMessage!,
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
               ],
             ],
           ),
@@ -210,7 +263,10 @@ class _AdminScreenState extends State<AdminScreen> {
                       final username = usernameController.text.trim();
                       final password = passwordController.text;
                       if (username.isEmpty || password.length < 6) {
-                        setDialogState(() => errorMessage = 'Enter a username and a password of at least 6 characters.');
+                        setDialogState(
+                          () => errorMessage =
+                              'Enter a username and a password of at least 6 characters.',
+                        );
                         return;
                       }
                       setDialogState(() {
@@ -218,15 +274,25 @@ class _AdminScreenState extends State<AdminScreen> {
                         errorMessage = null;
                       });
                       try {
-                        await _authService.createAdministrator(username: username, password: password);
+                        await _authService.createAdministrator(
+                          username: username,
+                          password: password,
+                        );
                         if (dialogContext.mounted) {
                           dialogOpen = false;
                           Navigator.pop(dialogContext);
                         }
                       } on FirebaseAuthException catch (error) {
-                        setDialogState(() => errorMessage = error.message ?? 'Unable to create administrator.');
+                        setDialogState(
+                          () => errorMessage =
+                              error.message ??
+                              'Unable to create administrator.',
+                        );
                       } catch (_) {
-                        setDialogState(() => errorMessage = 'Unable to create administrator.');
+                        setDialogState(
+                          () =>
+                              errorMessage = 'Unable to create administrator.',
+                        );
                       } finally {
                         if (dialogOpen && dialogContext.mounted) {
                           setDialogState(() => submitting = false);
@@ -272,14 +338,11 @@ class _AdminScreenState extends State<AdminScreen> {
             if (_showSettings)
               GestureDetector(
                 onTap: () => setState(() => _showSettings = false),
-                child: Container(
-                  color: Colors.black.withValues(alpha: 0.4),
-                ),
+                child: Container(color: Colors.black.withValues(alpha: 0.4)),
               ),
 
             // Settings sidebar
-            if (_showSettings)
-              _buildSettingsOverlay(),
+            if (_showSettings) _buildSettingsOverlay(),
           ],
         ),
       ),
@@ -331,7 +394,10 @@ class _AdminScreenState extends State<AdminScreen> {
         return StatefulBuilder(
           builder: (context, setState) {
             return AlertDialog(
-              title: Text('Change Name', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+              title: Text(
+                'Change Name',
+                style: GoogleFonts.outfit(fontWeight: FontWeight.bold),
+              ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -346,14 +412,19 @@ class _AdminScreenState extends State<AdminScreen> {
                     const SizedBox(height: 12),
                     Text(
                       errorText!,
-                      style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 13),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                        fontSize: 13,
+                      ),
                     ),
                   ],
                 ],
               ),
               actions: [
                 TextButton(
-                  onPressed: isSubmitting ? null : () => Navigator.of(context).pop(),
+                  onPressed: isSubmitting
+                      ? null
+                      : () => Navigator.of(context).pop(),
                   child: Text('Cancel', style: GoogleFonts.inter()),
                 ),
                 ElevatedButton(
@@ -377,21 +448,26 @@ class _AdminScreenState extends State<AdminScreen> {
                               throw Exception('No authenticated admin found.');
                             }
 
-                            final currentInfo = await _authService.getCurrentUserInfo();
-                            final updatedInfo = (currentInfo ??
-                                    UserInfo(
+                            final currentInfo = await _authService
+                                .getCurrentUserInfo();
+                            final updatedInfo =
+                                (currentInfo ??
+                                        UserInfo(
+                                          uid: currentUser.uid,
+                                          email: currentUser.email ?? '',
+                                          phoneNumber: '',
+                                          address: '',
+                                          fullName: newName,
+                                          createdAt: DateTime.now(),
+                                        ))
+                                    .copyWith(
                                       uid: currentUser.uid,
-                                      email: currentUser.email ?? '',
-                                      phoneNumber: '',
-                                      address: '',
+                                      email:
+                                          currentUser.email ??
+                                          currentInfo?.email ??
+                                          '',
                                       fullName: newName,
-                                      createdAt: DateTime.now(),
-                                    ))
-                                .copyWith(
-                                  uid: currentUser.uid,
-                                  email: currentUser.email ?? currentInfo?.email ?? '',
-                                  fullName: newName,
-                                );
+                                    );
 
                             await _authService.updateUserInfo(updatedInfo);
 
@@ -399,7 +475,10 @@ class _AdminScreenState extends State<AdminScreen> {
                             Navigator.of(this.context).pop();
                             ScaffoldMessenger.of(this.context).showSnackBar(
                               SnackBar(
-                                content: Text('Name updated successfully.', style: GoogleFonts.inter()),
+                                content: Text(
+                                  'Name updated successfully.',
+                                  style: GoogleFonts.inter(),
+                                ),
                                 backgroundColor: Colors.green,
                               ),
                             );
@@ -417,7 +496,10 @@ class _AdminScreenState extends State<AdminScreen> {
                       ? const SizedBox(
                           height: 18,
                           width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
                       : Text('Save', style: GoogleFonts.inter()),
                 ),
@@ -444,7 +526,10 @@ class _AdminScreenState extends State<AdminScreen> {
         return StatefulBuilder(
           builder: (context, setState) {
             return AlertDialog(
-              title: Text('Change Password', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
+              title: Text(
+                'Change Password',
+                style: GoogleFonts.outfit(fontWeight: FontWeight.bold),
+              ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -455,7 +540,11 @@ class _AdminScreenState extends State<AdminScreen> {
                       labelText: 'New Password',
                       border: const OutlineInputBorder(),
                       suffixIcon: IconButton(
-                        icon: Icon(showNewPassword ? Icons.visibility : Icons.visibility_off),
+                        icon: Icon(
+                          showNewPassword
+                              ? Icons.visibility
+                              : Icons.visibility_off,
+                        ),
                         onPressed: () {
                           setState(() {
                             showNewPassword = !showNewPassword;
@@ -472,7 +561,11 @@ class _AdminScreenState extends State<AdminScreen> {
                       labelText: 'Re-type New Password',
                       border: const OutlineInputBorder(),
                       suffixIcon: IconButton(
-                        icon: Icon(showConfirmPassword ? Icons.visibility : Icons.visibility_off),
+                        icon: Icon(
+                          showConfirmPassword
+                              ? Icons.visibility
+                              : Icons.visibility_off,
+                        ),
                         onPressed: () {
                           setState(() {
                             showConfirmPassword = !showConfirmPassword;
@@ -485,14 +578,19 @@ class _AdminScreenState extends State<AdminScreen> {
                     const SizedBox(height: 12),
                     Text(
                       errorText!,
-                      style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 13),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                        fontSize: 13,
+                      ),
                     ),
                   ],
                 ],
               ),
               actions: [
                 TextButton(
-                  onPressed: isSubmitting ? null : () => Navigator.of(context).pop(),
+                  onPressed: isSubmitting
+                      ? null
+                      : () => Navigator.of(context).pop(),
                   child: Text('Cancel', style: GoogleFonts.inter()),
                 ),
                 ElevatedButton(
@@ -500,7 +598,8 @@ class _AdminScreenState extends State<AdminScreen> {
                       ? null
                       : () async {
                           final newPassword = newPasswordController.text.trim();
-                          final confirmPassword = confirmPasswordController.text.trim();
+                          final confirmPassword = confirmPasswordController.text
+                              .trim();
 
                           if (newPassword.isEmpty || confirmPassword.isEmpty) {
                             setState(() {
@@ -511,7 +610,8 @@ class _AdminScreenState extends State<AdminScreen> {
 
                           if (newPassword != confirmPassword) {
                             setState(() {
-                              errorText = 'Passwords do not match. Please try again.';
+                              errorText =
+                                  'Passwords do not match. Please try again.';
                             });
                             return;
                           }
@@ -520,16 +620,32 @@ class _AdminScreenState extends State<AdminScreen> {
                             context: context,
                             builder: (context) {
                               return AlertDialog(
-                                title: Text('Confirm password change?', style: GoogleFonts.outfit(fontWeight: FontWeight.bold)),
-                                content: Text('Are you sure you want to update your password?', style: GoogleFonts.inter()),
+                                title: Text(
+                                  'Confirm password change?',
+                                  style: GoogleFonts.outfit(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                content: Text(
+                                  'Are you sure you want to update your password?',
+                                  style: GoogleFonts.inter(),
+                                ),
                                 actions: [
                                   TextButton(
-                                    onPressed: () => Navigator.of(context).pop(false),
-                                    child: Text('No', style: GoogleFonts.inter()),
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(false),
+                                    child: Text(
+                                      'No',
+                                      style: GoogleFonts.inter(),
+                                    ),
                                   ),
                                   ElevatedButton(
-                                    onPressed: () => Navigator.of(context).pop(true),
-                                    child: Text('Yes', style: GoogleFonts.inter()),
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(true),
+                                    child: Text(
+                                      'Yes',
+                                      style: GoogleFonts.inter(),
+                                    ),
                                   ),
                                 ],
                               );
@@ -552,21 +668,28 @@ class _AdminScreenState extends State<AdminScreen> {
                             Navigator.of(this.context).pop();
                             ScaffoldMessenger.of(this.context).showSnackBar(
                               SnackBar(
-                                content: Text('Password updated successfully.', style: GoogleFonts.inter()),
+                                content: Text(
+                                  'Password updated successfully.',
+                                  style: GoogleFonts.inter(),
+                                ),
                                 backgroundColor: Colors.green,
                               ),
                             );
                           } on FirebaseAuthException catch (e) {
                             setState(() {
                               if (e.code == 'requires-recent-login') {
-                                errorText = 'Please sign in again before changing your password.';
+                                errorText =
+                                    'Please sign in again before changing your password.';
                               } else {
-                                errorText = e.message ?? 'Password update failed. Please try again.';
+                                errorText =
+                                    e.message ??
+                                    'Password update failed. Please try again.';
                               }
                             });
                           } catch (_) {
                             setState(() {
-                              errorText = 'Unable to update password right now.';
+                              errorText =
+                                  'Unable to update password right now.';
                             });
                           } finally {
                             setState(() {
@@ -578,7 +701,10 @@ class _AdminScreenState extends State<AdminScreen> {
                       ? const SizedBox(
                           height: 18,
                           width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
                       : Text('Change Password', style: GoogleFonts.inter()),
                 ),
@@ -624,8 +750,6 @@ class _AdminScreenState extends State<AdminScreen> {
           _buildStatisticsHeader(),
           const SizedBox(height: 32),
           _buildLiveStatisticsSection(),
-          const SizedBox(height: 24),
-          _buildRegionalDistributionCard(),
           const SizedBox(height: 24),
           _buildSecuritySegmentsCard(),
           const SizedBox(height: 100),
@@ -675,10 +799,7 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(height: 32),
           Text(
             'Coming soon...',
-            style: GoogleFonts.outfit(
-              color: Colors.white54,
-              fontSize: 18,
-            ),
+            style: GoogleFonts.outfit(color: Colors.white54, fontSize: 18),
           ),
           const SizedBox(height: 100),
         ],
@@ -746,7 +867,10 @@ class _AdminScreenState extends State<AdminScreen> {
           return _buildCardContainer(
             child: Text(
               'Unable to load user statistics right now.',
-              style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+              style: GoogleFonts.inter(
+                color: _secondaryTextColor,
+                fontSize: 12,
+              ),
             ),
           );
         }
@@ -764,12 +888,17 @@ class _AdminScreenState extends State<AdminScreen> {
               return _buildCardContainer(
                 child: Text(
                   'Unable to load activity trends right now.',
-                  style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+                  style: GoogleFonts.inter(
+                    color: _secondaryTextColor,
+                    fontSize: 12,
+                  ),
                 ),
               );
             }
 
-            final logsDocs = logsSnapshot.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+            final logsDocs =
+                logsSnapshot.data?.docs ??
+                const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
             final metrics = _computeLiveUserStats(usersDocs, logsDocs);
 
             return Column(
@@ -777,6 +906,8 @@ class _AdminScreenState extends State<AdminScreen> {
                 _buildStatisticsCardsWithData(metrics),
                 const SizedBox(height: 24),
                 _buildActivityTrendsCard(metrics.trendPoints),
+                const SizedBox(height: 24),
+                _buildRegionalDistributionCard(usersDocs),
               ],
             );
           },
@@ -825,7 +956,7 @@ class _AdminScreenState extends State<AdminScreen> {
           Text(
             title,
             style: GoogleFonts.inter(
-                  color: _secondaryTextColor.withValues(alpha: 0.7),
+              color: _secondaryTextColor.withValues(alpha: 0.7),
               fontSize: 11,
               letterSpacing: 1.5,
               fontWeight: FontWeight.w600,
@@ -862,15 +993,15 @@ class _AdminScreenState extends State<AdminScreen> {
     final maxCount = points.isEmpty
         ? 1
         : points
-            .map((point) => point.activeUsers > point.inactiveUsers ? point.activeUsers : point.inactiveUsers)
-            .reduce((a, b) => a > b ? a : b);
+              .map((point) => point.loginCount)
+              .reduce((a, b) => a > b ? a : b);
 
     return _buildCardContainer(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'User Activity Trends',
+            'User Activity',
             style: GoogleFonts.outfit(
               color: const Color(0xFF4EEF9B),
               fontSize: 20,
@@ -879,11 +1010,8 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Comparing real-time active sessions vs inactive accounts',
-            style: GoogleFonts.inter(
-              color: _secondaryTextColor,
-              fontSize: 12,
-            ),
+            'Unique users who logged in this week',
+            style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
           ),
           const SizedBox(height: 24),
           Container(
@@ -898,10 +1026,9 @@ class _AdminScreenState extends State<AdminScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: points
                     .map(
-                      (point) => _buildTrendBarPair(
+                      (point) => _buildLoginBar(
                         point.dayLabel,
-                        point.activeUsers,
-                        point.inactiveUsers,
+                        point.loginCount,
                         maxCount,
                       ),
                     )
@@ -922,21 +1049,7 @@ class _AdminScreenState extends State<AdminScreen> {
               ),
               const SizedBox(width: 8),
               Text(
-                'ACTIVE',
-                style: GoogleFonts.inter(fontSize: 11, color: Colors.white54),
-              ),
-              const SizedBox(width: 24),
-              Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'INACTIVE',
+                'LOGINS',
                 style: GoogleFonts.inter(fontSize: 11, color: Colors.white54),
               ),
             ],
@@ -946,39 +1059,19 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildTrendBarPair(
-    String day,
-    int activeUsers,
-    int inactiveUsers,
-    int maxCount,
-  ) {
-    final activeHeight = maxCount == 0 ? 4.0 : (activeUsers / maxCount) * 80;
-    final inactiveHeight = maxCount == 0 ? 4.0 : (inactiveUsers / maxCount) * 80;
+  Widget _buildLoginBar(String day, int loginCount, int maxCount) {
+    final barHeight = maxCount == 0 ? 4.0 : (loginCount / maxCount) * 80;
 
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Container(
-              width: 8,
-              height: activeHeight < 4 ? 4 : activeHeight,
-              decoration: BoxDecoration(
-                color: const Color(0xFF4EEF9B),
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Container(
-              width: 8,
-              height: inactiveHeight < 4 ? 4 : inactiveHeight,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-          ],
+        Container(
+          width: 10,
+          height: barHeight < 4 ? 4 : barHeight,
+          decoration: BoxDecoration(
+            color: const Color(0xFF4EEF9B),
+            borderRadius: BorderRadius.circular(4),
+          ),
         ),
         const SizedBox(height: 8),
         Text(
@@ -995,7 +1088,7 @@ class _AdminScreenState extends State<AdminScreen> {
   ) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final startDate = today.subtract(const Duration(days: 6));
+    final startDate = _startOfCurrentWeek(today);
 
     final userIds = <String>{};
     final usersById = <String, Map<String, dynamic>>{};
@@ -1023,10 +1116,10 @@ class _AdminScreenState extends State<AdminScreen> {
       }
     }
 
-    final activeByDay = <String, Set<String>>{};
+    final loginsByDay = <String, Set<String>>{};
     for (var i = 0; i < 7; i++) {
       final day = startDate.add(Duration(days: i));
-      activeByDay[_dayKey(day)] = <String>{};
+      loginsByDay[_dayKey(day)] = <String>{};
     }
 
     for (final logDoc in logsDocs) {
@@ -1036,38 +1129,39 @@ class _AdminScreenState extends State<AdminScreen> {
         continue;
       }
 
-      final activityTime = _asDateTime(data['timestamp']) ?? _asDateTime(data['clientTimestamp']);
+      final activityTime =
+          _asDateTime(data['timestamp']) ??
+          _asDateTime(data['clientTimestamp']);
       if (activityTime == null) {
         continue;
       }
 
       final localTime = activityTime.toLocal();
-      if (now.difference(localTime) <= _activeSessionWindow) {
-        activeNowIds.add(userId);
-      }
-
       final day = DateTime(localTime.year, localTime.month, localTime.day);
       if (day.isBefore(startDate) || day.isAfter(today)) {
         continue;
       }
 
-      activeByDay[_dayKey(day)]?.add(userId);
+      if (data['activityType'] == 'USER_LOGIN') {
+        loginsByDay[_dayKey(day)]?.add(userId);
+      }
     }
 
     final totalUsers = usersDocs.length;
-    final uniqueActiveNow = activeNowIds.length > totalUsers ? totalUsers : activeNowIds.length;
-    final inactiveUsers = totalUsers - uniqueActiveNow < 0 ? 0 : totalUsers - uniqueActiveNow;
+    final uniqueActiveNow = activeNowIds.length > totalUsers
+        ? totalUsers
+        : activeNowIds.length;
+    final inactiveUsers = totalUsers - uniqueActiveNow < 0
+        ? 0
+        : totalUsers - uniqueActiveNow;
 
     final trendPoints = <_ActivityTrendPoint>[];
     for (var i = 0; i < 7; i++) {
       final day = startDate.add(Duration(days: i));
-      final activeUsers = activeByDay[_dayKey(day)]?.length ?? 0;
-      final inactiveForDay = totalUsers - activeUsers < 0 ? 0 : totalUsers - activeUsers;
       trendPoints.add(
         _ActivityTrendPoint(
           dayLabel: _dayLabel(day.weekday),
-          activeUsers: activeUsers,
-          inactiveUsers: inactiveForDay,
+          loginCount: loginsByDay[_dayKey(day)]?.length ?? 0,
         ),
       );
     }
@@ -1081,7 +1175,9 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   bool _isMarkedActive(Map<String, dynamic> data, DateTime now) {
-    final status = (data['status'] ?? data['userStatus'] ?? '').toString().toLowerCase();
+    final status = (data['status'] ?? data['userStatus'] ?? '')
+        .toString()
+        .toLowerCase();
     if (status == 'online' || status == 'active' || status == 'live') {
       return true;
     }
@@ -1091,7 +1187,8 @@ class _AdminScreenState extends State<AdminScreen> {
       return true;
     }
 
-    final lastSeen = _asDateTime(data['lastSeen']) ??
+    final lastSeen =
+        _asDateTime(data['lastSeen']) ??
         _asDateTime(data['lastActiveAt']) ??
         _asDateTime(data['updatedAt']);
     if (lastSeen == null) {
@@ -1126,6 +1223,11 @@ class _AdminScreenState extends State<AdminScreen> {
     return '${day.year}-$month-$date';
   }
 
+  DateTime _startOfCurrentWeek(DateTime date) {
+    final day = DateTime(date.year, date.month, date.day);
+    return day.subtract(Duration(days: day.weekday - DateTime.monday));
+  }
+
   String _dayLabel(int weekday) {
     switch (weekday) {
       case DateTime.monday:
@@ -1147,28 +1249,17 @@ class _AdminScreenState extends State<AdminScreen> {
 
   String _formatCount(int value) {
     final text = value.toString();
-    return text.replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (match) => ',');
+    return text.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (match) => ',',
+    );
   }
 
-  Widget _buildRegionalDistributionCard() {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _usersStream,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return _buildCardContainer(
-            child: Text(
-              'Unable to load regional distribution right now.',
-              style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
-            ),
-          );
-        }
-
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final regions = _computeRegionalDistribution(snapshot.data!.docs);
-        return _buildCardContainer(
+  Widget _buildRegionalDistributionCard(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> users,
+  ) {
+    final regions = _computeRegionalDistribution(users);
+    return _buildCardContainer(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1198,21 +1289,24 @@ class _AdminScreenState extends State<AdminScreen> {
               if (regions.items.isEmpty)
                 Text(
                   'No users have selected a country yet.',
-                  style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+                  style: GoogleFonts.inter(
+                    color: _secondaryTextColor,
+                    fontSize: 12,
+                  ),
                 )
               else
-                ...regions.items.expand(
-                  (region) => [
-                    _buildRegionItem(region),
-                    const SizedBox(height: 16),
-                  ],
-                ).toList()
+                ...regions.items
+                    .expand(
+                      (region) => [
+                        _buildRegionItem(region),
+                        const SizedBox(height: 16),
+                      ],
+                    )
+                    .toList()
                   ..removeLast(),
             ],
           ),
         );
-      },
-    );
   }
 
   _RegionalDistribution _computeRegionalDistribution(
@@ -1221,21 +1315,27 @@ class _AdminScreenState extends State<AdminScreen> {
     final counts = <String, int>{};
     var totalUsers = 0;
     for (final user in users) {
-      final country = (user.data()['country'] ?? '').toString().trim();
+      final data = user.data();
+      final country = (data['country'] ?? data['Country'] ?? '').toString().trim();
       if (country.isEmpty) continue;
       final region = _regionForCountry(country);
       counts[region] = (counts[region] ?? 0) + 1;
       totalUsers++;
     }
 
-    final items = counts.entries
-        .map((entry) => _RegionalDistributionItem(
-              region: entry.key,
-              userCount: entry.value,
-              percentage: totalUsers == 0 ? 0 : (entry.value / totalUsers) * 100,
-            ))
-        .toList()
-      ..sort((left, right) => right.userCount.compareTo(left.userCount));
+    final items =
+        counts.entries
+            .map(
+              (entry) => _RegionalDistributionItem(
+                region: entry.key,
+                userCount: entry.value,
+                percentage: totalUsers == 0
+                    ? 0
+                    : (entry.value / totalUsers) * 100,
+              ),
+            )
+            .toList()
+          ..sort((left, right) => right.userCount.compareTo(left.userCount));
     return _RegionalDistribution(totalUsers: totalUsers, items: items);
   }
 
@@ -1279,8 +1379,11 @@ class _AdminScreenState extends State<AdminScreen> {
                     color: const Color(0xFF4EEF9B),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.public,
-                      size: 12, color: Color(0xFF0C100E)),
+                  child: const Icon(
+                    Icons.public,
+                    size: 12,
+                    color: Color(0xFF0C100E),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Text(
@@ -1309,9 +1412,7 @@ class _AdminScreenState extends State<AdminScreen> {
             value: item.percentage / 100,
             minHeight: 6,
             backgroundColor: context.canvasBorder,
-            valueColor: const AlwaysStoppedAnimation<Color>(
-              Color(0xFF4EEF9B),
-            ),
+            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF4EEF9B)),
           ),
         ),
       ],
@@ -1356,11 +1457,23 @@ class _AdminScreenState extends State<AdminScreen> {
             ],
           ),
           const SizedBox(height: 24),
-          _buildSegmentItem('Enterprise Nodes', 'High Traffic Volume', '824'),
+          _buildSegmentItem(
+            'CCTV Camera',
+            'Tapo Camera',
+            _frontCameraOnline && _backCameraOnline ? 'Good' : 'Bad',
+          ),
           const SizedBox(height: 16),
-          _buildSegmentItem('Guardian Proxies', 'Residential/SOHO', '5,102'),
+          _buildSegmentItem(
+            'Camera Activation (go2rtc)',
+            'go2rtc',
+            _go2rtcOnline ? 'Good' : 'Bad',
+          ),
           const SizedBox(height: 16),
-          _buildSegmentItem('Sentinel Guests', 'Public Verification', '12,488'),
+          _buildSegmentItem(
+            'Camera Proxy (cors_proxy)',
+            'Cors.proxy',
+            _cameraProxyOnline ? 'Good' : 'Bad',
+          ),
         ],
       ),
     );
@@ -1432,14 +1545,14 @@ class _AdminScreenState extends State<AdminScreen> {
           children: [
             // Settings Header
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 24.0,
+                vertical: 16.0,
+              ),
               decoration: BoxDecoration(
                 color: context.tertiarySurface,
                 border: Border(
-                  bottom: BorderSide(
-                    color: Colors.white10,
-                    width: 1,
-                  ),
+                  bottom: BorderSide(color: Colors.white10, width: 1),
                 ),
               ),
               child: Row(
@@ -1457,12 +1570,19 @@ class _AdminScreenState extends State<AdminScreen> {
                   Row(
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.arrow_forward,
-                            color: Color(0xFF4EEF9B), size: 20),
+                        icon: const Icon(
+                          Icons.arrow_forward,
+                          color: Color(0xFF4EEF9B),
+                          size: 20,
+                        ),
                         onPressed: () {},
                       ),
                       IconButton(
-                        icon: Icon(Icons.close, color: _secondaryTextColor, size: 20),
+                        icon: Icon(
+                          Icons.close,
+                          color: _secondaryTextColor,
+                          size: 20,
+                        ),
                         onPressed: () {
                           setState(() => _showSettings = false);
                         },
@@ -1475,7 +1595,10 @@ class _AdminScreenState extends State<AdminScreen> {
             // Settings Content
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24.0,
+                  vertical: 24.0,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1499,7 +1622,9 @@ class _AdminScreenState extends State<AdminScreen> {
                           StreamBuilder<UserInfo?>(
                             stream: _adminInfoStream(),
                             builder: (context, snapshot) {
-                              final adminName = _resolveAdminName(snapshot.data);
+                              final adminName = _resolveAdminName(
+                                snapshot.data,
+                              );
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -1527,21 +1652,18 @@ class _AdminScreenState extends State<AdminScreen> {
                     ),
                     const SizedBox(height: 32),
                     // Manage Account Section
-                    _buildSettingGroup(
-                      'MANAGE ACCOUNT',
-                      [
-                        _buildSimpleSettingItem(
-                          'Change Name',
-                          Icons.check_circle_outline,
-                          onTap: _showChangeAdminNameDialog,
-                        ),
-                        _buildSimpleSettingItem(
-                          'Change Password',
-                          Icons.check_circle_outline,
-                          onTap: _showChangeAdminPasswordDialog,
-                        ),
-                      ],
-                    ),
+                    _buildSettingGroup('MANAGE ACCOUNT', [
+                      _buildSimpleSettingItem(
+                        'Change Name',
+                        Icons.check_circle_outline,
+                        onTap: _showChangeAdminNameDialog,
+                      ),
+                      _buildSimpleSettingItem(
+                        'Change Password',
+                        Icons.check_circle_outline,
+                        onTap: _showChangeAdminPasswordDialog,
+                      ),
+                    ]),
                     const SizedBox(height: 32),
                     // App Settings Section
                     Text(
@@ -1566,7 +1688,11 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildSimpleSettingItem(String title, IconData icon, {VoidCallback? onTap}) {
+  Widget _buildSimpleSettingItem(
+    String title,
+    IconData icon, {
+    VoidCallback? onTap,
+  }) {
     return Container(
       decoration: BoxDecoration(
         color: context.tertiarySurface,
@@ -1675,9 +1801,7 @@ class _AdminScreenState extends State<AdminScreen> {
       children: [
         const CircleAvatar(
           radius: 20,
-          backgroundImage: NetworkImage(
-            'https://i.pravatar.cc/150?img=47',
-          ),
+          backgroundImage: NetworkImage('https://i.pravatar.cc/150?img=47'),
         ),
         const SizedBox(width: 12),
         StreamBuilder<UserInfo?>(
@@ -1794,7 +1918,8 @@ class _AdminScreenState extends State<AdminScreen> {
       builder: (context, snapshot) {
         final currentAdmin = _authService.currentUser;
         final currentAdminId = currentAdmin?.uid;
-        final members = snapshot.data?.docs
+        final members =
+            snapshot.data?.docs
                 .where(
                   (doc) =>
                       doc.data()['role'] == 'Administrator' &&
@@ -1810,8 +1935,19 @@ class _AdminScreenState extends State<AdminScreen> {
                 'Manage Users',
                 trailing: TextButton.icon(
                   onPressed: _showAddMemberDialog,
-                  icon: Icon(Icons.person_add, color: _secondaryTextColor, size: 16),
-                  label: Text('ADD MEMBER', style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12, fontWeight: FontWeight.w600)),
+                  icon: Icon(
+                    Icons.person_add,
+                    color: _secondaryTextColor,
+                    size: 16,
+                  ),
+                  label: Text(
+                    'ADD MEMBER',
+                    style: GoogleFonts.inter(
+                      color: _secondaryTextColor,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 24),
@@ -1823,16 +1959,23 @@ class _AdminScreenState extends State<AdminScreen> {
                 statusColor: const Color(0xFF00E676),
               ),
               if (members.isNotEmpty) const SizedBox(height: 16),
-              ...members.map((member) => Padding(
-                      padding: const EdgeInsets.only(bottom: 16),
-                      child: _buildUserRow(
-                        name: (member.data()['fullName'] ?? member.data()['email'] ?? 'Administrator').toString(),
-                        role: 'Administrator',
-                        status: (member.data()['accountStatus'] ?? 'ACTIVE').toString(),
-                        avatarUrl: 'https://i.pravatar.cc/150?img=47',
-                        statusColor: const Color(0xFF00E676),
-                      ),
-                    )),
+              ...members.map(
+                (member) => Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: _buildUserRow(
+                    name:
+                        (member.data()['fullName'] ??
+                                member.data()['email'] ??
+                                'Administrator')
+                            .toString(),
+                    role: 'Administrator',
+                    status: (member.data()['accountStatus'] ?? 'ACTIVE')
+                        .toString(),
+                    avatarUrl: 'https://i.pravatar.cc/150?img=47',
+                    statusColor: const Color(0xFF00E676),
+                  ),
+                ),
+              ),
             ],
           ),
         );
@@ -1847,7 +1990,9 @@ class _AdminScreenState extends State<AdminScreen> {
     required String avatarUrl,
     required Color statusColor,
   }) {
-    final borderColor = context.isDarkMode ? Colors.white10 : const Color(0xFFE3E8EF);
+    final borderColor = context.isDarkMode
+        ? Colors.white10
+        : const Color(0xFFE3E8EF);
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -1873,7 +2018,10 @@ class _AdminScreenState extends State<AdminScreen> {
                 ),
                 Text(
                   role,
-                  style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+                  style: GoogleFonts.inter(
+                    color: _secondaryTextColor,
+                    fontSize: 12,
+                  ),
                 ),
               ],
             ),
@@ -1947,7 +2095,10 @@ class _AdminScreenState extends State<AdminScreen> {
             ),
             Text(
               subtitle,
-              style: GoogleFonts.inter(color: _secondaryTextColor, fontSize: 12),
+              style: GoogleFonts.inter(
+                color: _secondaryTextColor,
+                fontSize: 12,
+              ),
             ),
           ],
         ),
@@ -1975,7 +2126,9 @@ class _AdminScreenState extends State<AdminScreen> {
               decoration: BoxDecoration(
                 color: context.tertiarySurface,
                 shape: BoxShape.circle,
-                border: Border.all(color: context.mutedText.withValues(alpha: 0.10)),
+                border: Border.all(
+                  color: context.mutedText.withValues(alpha: 0.10),
+                ),
               ),
               child: const Icon(Icons.sync, color: Color(0xFF4EEF9B), size: 18),
             ),
@@ -2004,11 +2157,19 @@ class _AdminScreenState extends State<AdminScreen> {
           Row(
             children: [
               Expanded(
-                child: _buildCameraStatusBox(context, 'Front Camera', _frontCameraOnline),
+                child: _buildCameraStatusBox(
+                  context,
+                  'Front Camera',
+                  _frontCameraOnline,
+                ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _buildCameraStatusBox(context, 'Back Camera', _backCameraOnline),
+                child: _buildCameraStatusBox(
+                  context,
+                  'Back Camera',
+                  _backCameraOnline,
+                ),
               ),
             ],
           ),
@@ -2017,10 +2178,16 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildCameraStatusBox(BuildContext context, String name, bool isOnline) {
+  Widget _buildCameraStatusBox(
+    BuildContext context,
+    String name,
+    bool isOnline,
+  ) {
     final panel = context.tertiarySurface;
     final borderColor = context.canvasBorder;
-    final statusColor = isOnline ? const Color(0xFF4EEF9B) : _secondaryTextColor;
+    final statusColor = isOnline
+        ? const Color(0xFF4EEF9B)
+        : _secondaryTextColor;
 
     return Material(
       color: panel,
@@ -2294,7 +2461,9 @@ class _AdminScreenState extends State<AdminScreen> {
                 border: _currentPage == 2
                     ? null
                     : Border.all(
-                        color: context.isDarkMode ? Colors.white54 : Colors.black12,
+                        color: context.isDarkMode
+                            ? Colors.white54
+                            : Colors.black12,
                         width: 2,
                       ),
               ),
@@ -2328,22 +2497,14 @@ class _LiveUserStatsMetrics {
 }
 
 class _ActivityTrendPoint {
-  const _ActivityTrendPoint({
-    required this.dayLabel,
-    required this.activeUsers,
-    required this.inactiveUsers,
-  });
+  const _ActivityTrendPoint({required this.dayLabel, required this.loginCount});
 
   final String dayLabel;
-  final int activeUsers;
-  final int inactiveUsers;
+  final int loginCount;
 }
 
 class _RegionalDistribution {
-  const _RegionalDistribution({
-    required this.totalUsers,
-    required this.items,
-  });
+  const _RegionalDistribution({required this.totalUsers, required this.items});
 
   final int totalUsers;
   final List<_RegionalDistributionItem> items;
